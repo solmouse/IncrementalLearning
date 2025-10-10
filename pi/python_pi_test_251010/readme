@@ -1,0 +1,10 @@
+1. download 'python_pi_test_251010' folder as zip file
+2. file copy to pi
+
+in terminal
+
+3. unzip python_pi_test_251010.zip
+4. ls    or     ll   to check file directory structure
+5. cd scripts
+6. python run_inference.py       - for inference test
+7. python run_incr_training.py   - for incremental training test
