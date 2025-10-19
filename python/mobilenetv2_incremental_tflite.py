@@ -7,12 +7,19 @@ MobileNetV2 온디바이스 증분학습 (단일 드라이브 + initialize 패�
 - 학습 안정화: LR=3e-4, Epochs=5, 간단 증강
 """
 
-import os, time, zipfile, shutil
+import os, time, zipfile, shutil, random
 from pathlib import Path
 import numpy as np
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras.applications.mobilenet_v2 import MobileNetV2, preprocess_input
+
+SEED = 42
+
+random.seed(SEED)
+np.random.seed(SEED)
+tf.random.set_seed(SEED)
+os.environ["PYTHONHASHSEED"] = str(SEED)
 
 # -------------------------------
 # 0) 드라이브 경로 통일
@@ -71,12 +78,13 @@ def preprocess(image, label, training=False):
 
 print("\n데이터셋 로딩 (단일 드라이브 경로 통일) ...")
 zip_path = keras.utils.get_file(
-    "cats_and_dogs_filtered.zip",
+    fname="cats_and_dogs_filtered.zip",
     origin="https://storage.googleapis.com/mledu-datasets/cats_and_dogs_filtered.zip",
     cache_dir=DATA_DIR,
     cache_subdir="",
     extract=False
 )
+
 root = Path(zip_path).with_suffix("")
 if root.exists():
     shutil.rmtree(root)
@@ -295,7 +303,7 @@ print("🚀 TFLite 증분학습 테스트")
 print("="*60)
 
 # delegate가 의심되면 experimental_delegates=[]로 시도 가능
-interpreter = tf.lite.Interpreter(model_path=TFLITE_PATH)  # , experimental_delegates=[]
+interpreter = tf.lite.Interpreter(model_path=TFLITE_PATH, experimental_delegates=[])
 interpreter.allocate_tensors()
 init_fn    = interpreter.get_signature_runner("initialize"); init_fn()
 train_fn   = interpreter.get_signature_runner("train")
