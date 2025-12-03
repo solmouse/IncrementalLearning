@@ -30,7 +30,7 @@ jobs:
     - name: Build TFLite (TensorFlow 2.19)
       run: |
         docker run --name builder \
-          tensorflow/tensorflow:2.19.0-devel \
+          tensorflow/tensorflow:2.19.0 \
           bash -c "
             cd /tensorflow_src
             bazel build -c opt \
