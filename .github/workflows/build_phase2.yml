@@ -1,0 +1,93 @@
+name: Build Phase2 Binary (Dynamic Linking)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'cpp/c_x86_test_251203/phase2_with_flex.cpp'
+
+jobs:
+  build-x86:
+    runs-on: ubuntu-latest
+    timeout-minutes: 500
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Free disk space
+      run: |
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /opt/ghc
+        sudo rm -rf /usr/local/lib/android
+        sudo apt-get clean
+        df -h
+
+    - name: Build Phase2 Binary
+      run: |
+        docker run --name builder \
+          -v ${{ github.workspace }}:/workspace \
+          ubuntu:24.04 \
+          bash -c "
+            set -e
+
+            echo '=== 1. Install Dependencies ==='
+            apt-get update
+            apt-get install -y \
+              git wget curl \
+              build-essential \
+              python3 python3-pip python3-dev \
+              openjdk-11-jdk \
+              zip unzip
+
+            echo '=== 2. Install Bazel 6.5.0 ==='
+            wget -q https://github.com/bazelbuild/bazel/releases/download/6.5.0/bazel-6.5.0-linux-x86_64 -O /usr/local/bin/bazel
+            chmod +x /usr/local/bin/bazel
+            bazel --version
+
+            echo '=== 3. Clone TensorFlow 2.19.0 ==='
+            git clone --depth 1 --branch v2.19.0 https://github.com/tensorflow/tensorflow.git /tensorflow_src
+            cd /tensorflow_src
+
+            echo '=== 4. Install Python Dependencies ==='
+            python3 -m pip install numpy wheel --break-system-packages
+
+            echo '=== 5. Setup Build Environment ==='
+            mkdir -p tensorflow/lite/examples/phase2
+
+            echo '=== Copy source file ==='
+            cp /workspace/cpp/c_x86_test_251203/phase2_with_flex.cpp \
+               tensorflow/lite/examples/phase2/
+
+            echo '=== Create BUILD file ==='
+            cat > tensorflow/lite/examples/phase2/BUILD << 'BUILDEOF'
+            load("//tensorflow/lite:build_def.bzl", "tflite_copts")
+
+            cc_binary(
+                name = "phase2_with_flex",
+                srcs = ["phase2_with_flex.cpp"],
+                deps = [
+                    "//tensorflow/lite:framework",
+                    "//tensorflow/lite/kernels:builtin_ops",
+                    "//tensorflow/lite/delegates/flex:delegate",
+                ],
+                copts = tflite_copts() + ["-std=c++17"],
+                linkopts = ["-ldl"],
+            )
+            BUILDEOF
+
+            echo '=== 6. Bazel Build ==='
+            bazel build -c opt \
+              --config=monolithic \
+              --define=tflite_with_select_tf_ops=true \
+              --verbose_failures \
+              //tensorflow/lite/examples/phase2:phase2_with_flex
+
+            echo '=== 7. Prepare Output ==='
+            mkdir -p /tmp/output
+            cp bazel-bin/tensorflow/lite/examples/phase2/phase2_with_flex /tmp/output/
+
+            ls -lh /tmp/output/
+            file /tmp/output/phase2_with_flex
+            ldd /tmp/output/phase2_with_flex ||

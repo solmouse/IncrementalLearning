@@ -1,6 +1,6 @@
-cat > .gitignore << 'EOF'
 libs/
 *.so
 *.o
 bazel-*
 EOF
+.jpg
