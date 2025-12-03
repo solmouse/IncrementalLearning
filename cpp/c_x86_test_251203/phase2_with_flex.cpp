@@ -11,9 +11,9 @@
 #include "tensorflow/lite/interpreter.h"
 #include "tensorflow/lite/kernels/register.h"
 #include "tensorflow/lite/signature_runner.h"
-#include "tensorflow/lite/delegates/flex/delegate.h"  // ← Flex delegate!
+#include "tensorflow/lite/delegates/flex/delegate.h"
 
-// Phase-2: TFLite 증분학습 (Flex delegate 사용)
+// Phase-2: TFLite incr learning with Flex delegate
 
 // ============================================================================
 // 상수 정의
