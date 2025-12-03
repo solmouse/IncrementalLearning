@@ -1,0 +1,142 @@
+name: Build TFLite SDK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/build_with_header.yml'
+
+jobs:
+  build_sdk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 500
+    
+    steps:
+    - name: Checkout User Repo
+      uses: actions/checkout@v4
+    
+    - name: Free disk space
+      run: |
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /opt/ghc
+        sudo rm -rf /usr/local/lib/android
+        sudo apt-get clean
+        df -h
+
+    - name: Create Dummy BUILD file
+      run: |
+        cat > phase2.BUILD << 'EOF'
+        cc_binary(
+            name = "phase2_with_flex",
+            srcs = ["phase2_with_flex.cpp"],
+            deps = [
+                "//tensorflow/lite:framework",
+                "//tensorflow/lite/delegates/flex:delegate",
+            ],
+            copts = ["-std=c++17"],
+        )
+        EOF
+
+    - name: Build and Package SDK inside Docker
+      run: |
+        docker run --name builder \
+          -v ${{ github.workspace }}:/workspace \
+          ubuntu:24.04 \
+          bash -c "
+            set -e
+            
+            echo '=== 1. Install Basic Tools ==='
+            apt-get update
+            apt-get install -y git wget curl build-essential python3 python3-pip python3-dev openjdk-11-jdk zip unzip
+            
+            echo '=== 2. Install Bazel 6.5.0 ==='
+            wget -q https://github.com/bazelbuild/bazel/releases/download/6.5.0/bazel-6.5.0-linux-x86_64 -O /usr/local/bin/bazel
+            chmod +x /usr/local/bin/bazel
+            
+            echo '=== 3. Clone TensorFlow 2.19.0 ==='
+            git clone --depth 1 --branch v2.19.0 https://github.com/tensorflow/tensorflow.git /tensorflow_src
+            cd /tensorflow_src
+            
+            echo '=== 4. Python Dependencies ==='
+            python3 -m pip install numpy wheel --break-system-packages
+            
+            echo '=== 5. Build Shared Libraries ==='
+            bazel build -c opt \
+              --config=monolithic \
+              --define=tflite_with_select_tf_ops=true \
+              --verbose_failures \
+              //tensorflow/lite:libtensorflowlite.so \
+              //tensorflow/lite/delegates/flex:libtensorflowlite_flex.so
+            
+            echo '=== 6. Packaging SDK ==='
+            mkdir -p /tmp/sdk/include
+            mkdir -p /tmp/sdk/lib
+            
+            echo 'Copying Libraries...'
+            cp bazel-bin/tensorflow/lite/libtensorflowlite.so /tmp/sdk/lib/
+            cp bazel-bin/tensorflow/lite/delegates/flex/libtensorflowlite_flex.so /tmp/sdk/lib/
+            
+            echo 'Copying TensorFlow headers...'
+            find tensorflow -name '*.h' -exec cp --parents {} /tmp/sdk/include/ \;
+
+            echo 'Copying External Dependencies...'
+            
+            # 3-1. FlatBuffers
+            FB_HEADER=\$(find -L . -name 'flatbuffers.h' | grep 'external/flatbuffers' | head -n 1)
+            if [ -n \"\$FB_HEADER\" ]; then
+               FB_ROOT=\$(dirname \$(dirname \"\$FB_HEADER\"))
+               echo \"Found FlatBuffers at: \$FB_ROOT\"
+               cp -r \"\$FB_ROOT/flatbuffers\" /tmp/sdk/include/
+            fi
+            
+            # 3-2. Abseil (absl)
+            ABSL_HEADER=\$(find -L . -name 'string_view.h' | grep 'external/com_google_absl' | head -n 1)
+            if [ -n \"\$ABSL_HEADER\" ]; then
+               ABSL_ROOT=\$(dirname \$(dirname \$(dirname \"\$ABSL_HEADER\")))
+               echo \"Found Abseil at: \$ABSL_ROOT\"
+               cp -r \"\$ABSL_ROOT/absl\" /tmp/sdk/include/
+            fi
+
+            EIGEN_HEADER=\$(find -L . -name 'Core' | grep 'external/eigen_archive/Eigen' | head -n 1)
+            if [ -n \"\$EIGEN_HEADER\" ]; then
+               # .../Eigen/Core -> .../Eigen (parent) -> .../ (root)
+               EIGEN_ROOT=\$(dirname \$(dirname \"\$EIGEN_HEADER\"))
+               echo \"Found Eigen at: \$EIGEN_ROOT\"
+               cp -r \"\$EIGEN_ROOT/Eigen\" /tmp/sdk/include/
+               cp -r \"\$EIGEN_ROOT/unsupported\" /tmp/sdk/include/ || echo 'No unsupported Eigen found, skipping'
+            else
+               echo '⚠️ WARNING: Eigen headers not found!'
+            fi
+            
+            GEMM_HEADER=\$(find -L . -name 'fixedpoint.h' | grep 'external/gemmlowp' | head -n 1)
+            if [ -n \"\$GEMM_HEADER\" ]; then
+               GEMM_ROOT=\$(dirname \$(dirname \"\$GEMM_HEADER\"))
+               echo \"Found Gemmlowp at: \$GEMM_ROOT\"
+               mkdir -p /tmp/sdk/include/fixedpoint
+               cp -r \"\$GEMM_ROOT/fixedpoint\" /tmp/sdk/include/
+               cp -r \"\$GEMM_ROOT/internal\" /tmp/sdk/include/ || true
+            fi
+            
+            NEON_HEADER=\$(find -L . -name 'NEON_2_SSE.h' | grep 'external' | head -n 1)
+            if [ -n \"\$NEON_HEADER\" ]; then
+               echo \"Found NEON_2_SSE\"
+               cp \"\$NEON_HEADER\" /tmp/sdk/include/
+            fi
+            
+            echo '=== 7. Zip SDK ==='
+            cd /tmp
+            zip -r tflite_sdk.zip sdk/
+            ls -lh tflite_sdk.zip
+          "
+        
+        echo '=== Extracting SDK from container ==='
+        docker cp builder:/tmp/tflite_sdk.zip ./tflite_sdk.zip
+        ls -lh tflite_sdk.zip
+
+    - name: Upload SDK Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: tflite_sdk_ultimate
+        path: tflite_sdk.zip
+        retention-days: 7
