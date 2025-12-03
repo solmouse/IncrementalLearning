@@ -1,4 +1,4 @@
-name: Build TFLite with Flex
+name: Build TFLite with Flex (TensorFlow 2.19)
 
 on:
   workflow_dispatch:
@@ -10,6 +10,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 500
     
     steps:
     - name: Checkout
@@ -19,6 +20,8 @@ jobs:
       run: |
         sudo rm -rf /usr/share/dotnet
         sudo rm -rf /opt/ghc
+        sudo rm -rf /usr/local/lib/android
+        sudo apt-get clean
         df -h
     
     - name: Login to Docker Hub
@@ -27,23 +30,53 @@ jobs:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
     
-    - name: Build TFLite (TensorFlow 2.19)
+    - name: Build TFLite 2.19 from source
       run: |
         docker run --name builder \
-          tensorflow/tensorflow:2.19.0 \
+          ubuntu:22.04 \
           bash -c "
+            set -e
+            
+            echo '=== Installing dependencies ==='
+            apt-get update
+            apt-get install -y \
+              git wget curl \
+              build-essential \
+              python3 python3-pip python3-dev \
+              openjdk-11-jdk \
+              zip unzip
+            
+            echo '=== Installing Bazel 6.5.0 ==='
+            wget -q https://github.com/bazelbuild/bazel/releases/download/6.5.0/bazel-6.5.0-linux-x86_64 -O /usr/local/bin/bazel
+            chmod +x /usr/local/bin/bazel
+            bazel --version
+            
+            echo '=== Cloning TensorFlow 2.19.0 ==='
+            git clone --depth 1 --branch v2.19.0 https://github.com/tensorflow/tensorflow.git /tensorflow_src
             cd /tensorflow_src
+            
+            echo '=== Installing Python dependencies ==='
+            python3 -m pip install --upgrade pip
+            python3 -m pip install numpy wheel
+            
+            echo '=== Building TFLite with SELECT_TF_OPS ==='
             bazel build -c opt \
               --config=monolithic \
               --define=tflite_with_select_tf_ops=true \
+              --verbose_failures \
               //tensorflow/lite:libtensorflowlite.so \
               //tensorflow/lite/delegates/flex:tensorflowlite_flex
             
+            echo '=== Copying libraries ==='
             mkdir -p /tmp/libs
             cp bazel-bin/tensorflow/lite/libtensorflowlite.so /tmp/libs/
             cp bazel-bin/tensorflow/lite/delegates/flex/libtensorflowlite_flex.so /tmp/libs/
+            
+            echo '=== Build complete ==='
+            ls -lh /tmp/libs/
           "
         
+        echo '=== Extracting libraries from container ==='
         docker cp builder:/tmp/libs ./libs
         ls -lh libs/
     
@@ -51,9 +84,17 @@ jobs:
       run: |
         cat > Dockerfile << 'DOCKER_EOF'
         FROM ubuntu:22.04
-        RUN apt-get update && apt-get install -y libstdc++6 && rm -rf /var/lib/apt/lists/*
+        
+        RUN apt-get update && \
+            apt-get install -y libstdc++6 && \
+            rm -rf /var/lib/apt/lists/*
+        
         COPY libs/*.so /usr/local/lib/
         RUN ldconfig
+        
+        # Verify libraries
+        RUN ls -lh /usr/local/lib/libtensorflow*
+        
         WORKDIR /app
         CMD ["bash"]
         DOCKER_EOF
@@ -73,3 +114,4 @@ jobs:
       with:
         name: tflite-libs-2.19
         path: libs/
+        retention-days: 7
