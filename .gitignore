@@ -3,4 +3,4 @@ libs/
 *.o
 bazel-*
 EOF
-.jpg
+*.jpg
