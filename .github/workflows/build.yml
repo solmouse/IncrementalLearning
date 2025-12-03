@@ -33,7 +33,7 @@ jobs:
     - name: Build TFLite 2.19 from source
       run: |
         docker run --name builder \
-          ubuntu:22.04 \
+          ubuntu:24.04 \
           bash -c "
             set -e
             
@@ -83,7 +83,7 @@ jobs:
     - name: Create Docker image
       run: |
         cat > Dockerfile << 'DOCKER_EOF'
-        FROM ubuntu:22.04
+        FROM ubuntu:24.04
         
         RUN apt-get update && \
             apt-get install -y libstdc++6 && \
