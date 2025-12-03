@@ -1,11 +1,11 @@
-mkdir -p .github/workflows
-cat > .github/workflows/build.yml << 'EOF'
 name: Build TFLite with Flex
 
 on:
   workflow_dispatch:
   push:
     branches: [ main ]
+    paths:
+      - '.github/workflows/build.yml'
 
 jobs:
   build:
@@ -71,4 +71,3 @@ jobs:
       with:
         name: tflite-libs
         path: libs/
-EOF
