@@ -44,7 +44,16 @@ jobs:
               build-essential \
               python3 python3-pip python3-dev \
               openjdk-11-jdk \
-              zip unzip
+              zip unzip \
+              software-properties-common
+            
+            echo '=== Installing GCC 12 for AVX512FP16 support ==='
+            add-apt-repository ppa:ubuntu-toolchain-r/test -y
+            apt-get update
+            apt-get install -y gcc-12 g++-12
+            update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 100
+            update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-12 100
+            gcc --version
             
             echo '=== Installing Bazel 6.5.0 ==='
             wget -q https://github.com/bazelbuild/bazel/releases/download/6.5.0/bazel-6.5.0-linux-x86_64 -O /usr/local/bin/bazel
@@ -56,8 +65,8 @@ jobs:
             cd /tensorflow_src
             
             echo '=== Installing Python dependencies ==='
-            python3 -m pip install --upgrade pip
-            python3 -m pip install numpy wheel
+            python3 -m pip install --upgrade pip --break-system-packages
+            python3 -m pip install numpy wheel --break-system-packages
             
             echo '=== Building TFLite with SELECT_TF_OPS ==='
             bazel build -c opt \
