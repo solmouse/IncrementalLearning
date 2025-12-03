@@ -77,9 +77,14 @@ jobs:
             cp bazel-bin/tensorflow/lite/libtensorflowlite.so /tmp/sdk/lib/
             cp bazel-bin/tensorflow/lite/delegates/flex/libtensorflowlite_flex.so /tmp/sdk/lib/
             
-            echo 'Copying TensorFlow headers...'
-            find tensorflow -name '*.h' -exec cp --parents {} /tmp/sdk/include/ \;
+            echo 'Copying Source Headers (h, hpp, inc)...'
+            find tensorflow \( -name '*.h' -o -name '*.hpp' -o -name '*.inc' \) -exec cp --parents {} /tmp/sdk/include/ \;
 
+            echo 'Copying Generated Headers (.pb.h, .inc)...'
+            cd bazel-bin
+            find tensorflow \( -name '*.pb.h' -o -name '*.inc' \) -exec cp --parents {} /tmp/sdk/include/ \;
+            cd /tensorflow_src
+            
             echo 'Copying External Dependencies...'
             
             # 3-1. FlatBuffers
