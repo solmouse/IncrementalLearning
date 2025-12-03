@@ -42,31 +42,12 @@ jobs:
             apt-get install -y \
               git wget curl \
               build-essential \
-              software-properties-common \
+              python3 python3-pip python3-dev \
               openjdk-11-jdk \
               zip unzip
             
-            echo '=== Installing Python 3.10 ==='
-            add-apt-repository ppa:deadsnakes/ppa -y
-            apt-get update
-            apt-get install -y python3.10 python3.10-dev python3.10-distutils
-            
-            # Python 3.10을 기본으로 설정
-            update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1
-            
-            # pip 설치 (Python 3.10용)
-            curl -sS https://bootstrap.pypa.io/get-pip.py | python3.10
-            
+            echo '=== Verify versions ==='
             python3 --version
-            python3 -m pip --version \
-              software-properties-common
-            
-            echo '=== Installing GCC 12 for AVX512FP16 support ==='
-            add-apt-repository ppa:ubuntu-toolchain-r/test -y
-            apt-get update
-            apt-get install -y gcc-12 g++-12
-            update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-12 100
-            update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-12 100
             gcc --version
             
             echo '=== Installing Bazel 6.5.0 ==='
