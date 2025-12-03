@@ -1,4 +1,4 @@
-name: Build Phase2 Binary (Dynamic Linking)
+name: Build Phase2 Binary (with Flex)
 
 on:
   workflow_dispatch:
@@ -8,14 +8,14 @@ on:
       - '.github/workflows/build_phase2.yml'
 
 jobs:
-  build-x86:
+  build_binary:
     runs-on: ubuntu-latest
     timeout-minutes: 500
-
+    
     steps:
-    - name: Checkout Repository
+    - name: Checkout User Repo
       uses: actions/checkout@v4
-
+    
     - name: Free disk space
       run: |
         sudo rm -rf /usr/share/dotnet
@@ -24,90 +24,75 @@ jobs:
         sudo apt-get clean
         df -h
 
-    - name: Create Docker Build Script
+    - name: Create BUILD file locally
       run: |
-        cat > docker_build.sh << 'EOF'
-#!/bin/bash
-set -e
+        cat > phase2.BUILD << 'EOF'
+        cc_binary(
+            name = "phase2_with_flex",
+            srcs = ["phase2_with_flex.cpp"],
+            deps = [
+                "//tensorflow/lite:framework",
+                "//tensorflow/lite/delegates/flex:delegate",
+            ],
+            copts = ["-std=c++17"],
+        )
+        EOF
 
-echo '=== 1. Install Dependencies ==='
-apt-get update
-apt-get install -y git wget curl build-essential python3 python3-pip python3-dev openjdk-11-jdk zip unzip
-
-echo '=== 2. Install Bazel 6.5.0 ==='
-wget -q https://github.com/bazelbuild/bazel/releases/download/6.5.0/bazel-6.5.0-linux-x86_64 -O /usr/local/bin/bazel
-chmod +x /usr/local/bin/bazel
-bazel --version
-
-echo '=== 3. Clone TensorFlow 2.19.0 ==='
-git clone --depth 1 --branch v2.19.0 https://github.com/tensorflow/tensorflow.git /tensorflow_src
-cd /tensorflow_src
-
-echo '=== 4. Install Python Dependencies ==='
-python3 -m pip install numpy wheel --break-system-packages
-
-echo '=== 5. Setup Build Environment ==='
-mkdir -p tensorflow/lite/examples/phase2
-
-echo '=== Copy source file ==='
-cp /workspace/cpp/c_x86_test_251203/phase2_with_flex.cpp \
-   tensorflow/lite/examples/phase2/
-
-echo '=== Create BUILD file ==='
-cat > tensorflow/lite/examples/phase2/BUILD << 'BUILDEOF'
-load("//tensorflow/lite:build_def.bzl", "tflite_copts")
-
-cc_binary(
-    name = "phase2_with_flex",
-    srcs = ["phase2_with_flex.cpp"],
-    deps = [
-        "//tensorflow/lite:framework",
-        "//tensorflow/lite/kernels:builtin_ops",
-        "//tensorflow/lite/delegates/flex:delegate",
-    ],
-    copts = tflite_copts() + ["-std=c++17"],
-    linkopts = ["-ldl"],
-)
-BUILDEOF
-
-echo '=== 6. Bazel Build ==='
-bazel build -c opt \
-  --config=monolithic \
-  --define=tflite_with_select_tf_ops=true \
-  --verbose_failures \
-  //tensorflow/lite/examples/phase2:phase2_with_flex
-
-echo '=== 7. Prepare Output ==='
-mkdir -p /tmp/output
-cp bazel-bin/tensorflow/lite/examples/phase2/phase2_with_flex /tmp/output/
-
-ls -lh /tmp/output/
-file /tmp/output/phase2_with_flex
-ldd /tmp/output/phase2_with_flex || true
-
-EOF
-
-        chmod +x docker_build.sh
-
-    - name: Run Build in Docker
+    - name: Build Binary inside Docker
       run: |
-        docker run --rm \
+        docker run --name builder \
           -v ${{ github.workspace }}:/workspace \
           ubuntu:24.04 \
-          bash /workspace/docker_build.sh
-
-    - name: Extract Binary
-      run: |
-        mkdir -p output_bin
-        docker run --name extract_phase2 ubuntu:24.04 true
-        ls -lah /tmp
-        # (docker_build.sh already wrote into container filesystem, not local; so we copy directly)
-        docker cp $(docker ps -alq):/tmp/output/phase2_with_flex output_bin/phase2_with_flex || true
+          bash -c "
+            set -e
+            
+            echo '=== 1. Installing dependencies ==='
+            apt-get update
+            apt-get install -y git wget curl build-essential python3 python3-pip python3-dev openjdk-11-jdk zip unzip
+            
+            echo '=== 2. Installing Bazel 6.5.0 ==='
+            wget -q https://github.com/bazelbuild/bazel/releases/download/6.5.0/bazel-6.5.0-linux-x86_64 -O /usr/local/bin/bazel
+            chmod +x /usr/local/bin/bazel
+            
+            echo '=== 3. Cloning TensorFlow 2.19.0 ==='
+            git clone --depth 1 --branch v2.19.0 https://github.com/tensorflow/tensorflow.git /tensorflow_src
+            cd /tensorflow_src
+            
+            echo '=== 4. Python Setup ==='
+            python3 -m pip install numpy wheel --break-system-packages
+            
+            echo '=== 5. Injecting Custom Code ==='
+            mkdir -p tensorflow/lite/lite_build2
+            
+            echo 'Copying source .cpp file...'
+            cp /workspace/cpp/c_x86_test_251203/phase2_with_flex.cpp tensorflow/lite/lite_build2/
+            
+            echo 'Copying pre-made BUILD file...'
+            cp /workspace/phase2.BUILD tensorflow/lite/lite_build2/BUILD
+            
+            echo 'Check created files:'
+            ls -l tensorflow/lite/lite_build2/
+            cat tensorflow/lite/lite_build2/BUILD
+            
+            echo '=== 6. Bazel Build (Executable) ==='
+            bazel build -c opt \
+              --config=monolithic \
+              --define=tflite_with_select_tf_ops=true \
+              --verbose_failures \
+              //tensorflow/lite/lite_build2:phase2_with_flex
+            
+            echo '=== 7. Prepare Output ==='
+            mkdir -p /tmp/output
+            cp bazel-bin/tensorflow/lite/lite_build2/phase2_with_flex /tmp/output/
+          "
+        
+        echo '=== Extracting artifact from container ==='
+        docker cp builder:/tmp/output ./output_bin
         ls -lh output_bin/
 
     - name: Upload Binary Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: phase2_with_flex_x86
+        name: phase2_with_flex_executable
         path: output_bin/phase2_with_flex
         retention-days: 7
