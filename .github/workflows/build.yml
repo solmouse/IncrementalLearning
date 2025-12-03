@@ -67,7 +67,7 @@ jobs:
         echo "✅ Done: sgs-registry.snucse.org/ws-5y8frda38hqz1/tflite-flex:latest"
     
     - name: Upload artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: tflite-libs
         path: libs/
