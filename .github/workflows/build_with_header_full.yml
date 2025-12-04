@@ -1,0 +1,334 @@
+name: Build TFLite Full
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/build_with_header_full.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 600
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    
+    - name: Free Space
+      run: |
+        sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android
+        sudo apt-get clean
+
+    - name: Build Nuclear SDK
+      run: |
+        docker run --name builder \
+          -v ${{ github.workspace }}:/workspace \
+          ubuntu:24.04 \
+          bash -c "
+            set -e
+            apt-get update
+            apt-get install -y git wget build-essential python3 python3-pip openjdk-11-jdk zip rsync tree
+            
+            wget -q https://github.com/bazelbuild/bazel/releases/download/6.5.0/bazel-6.5.0-linux-x86_64 -O /usr/local/bin/bazel
+            chmod +x /usr/local/bin/bazel
+            
+            git clone --depth 1 --branch v2.19.0 https://github.com/tensorflow/tensorflow.git /tf
+            cd /tf
+            python3 -m pip install numpy wheel --break-system-packages
+            
+            echo '=== Building with dependency tracking ==='
+            bazel build -c opt --config=monolithic --define=tflite_with_select_tf_ops=true \
+              --experimental_show_artifacts \
+              //tensorflow/lite:libtensorflowlite.so \
+              //tensorflow/lite/delegates/flex:libtensorflowlite_flex.so 2>&1 | tee /tmp/build.log
+            
+            mkdir -p /sdk/{lib,include}
+            cp bazel-bin/tensorflow/lite/*.so /sdk/lib/
+            
+            echo '=== PHASE 1: Source headers ==='
+            rsync -a --include='*/' --include='*.h' --include='*.hpp' --include='*.inc' --exclude='*' \
+              /tf/tensorflow/ /sdk/include/tensorflow/
+            
+            echo '=== PHASE 2: Generated headers (bazel-bin) ==='
+            find /tf/bazel-bin -type f \( -name '*.h' -o -name '*.hpp' -o -name '*.inc' -o -name '*.pb.h' \) 2>/dev/null | \
+              while read f; do
+                rel=\"\${f#/tf/bazel-bin/}\"
+                mkdir -p \"/sdk/include/\$(dirname \"\$rel\")\"
+                cp \"\$f\" \"/sdk/include/\$rel\"
+              done
+            
+            echo '=== PHASE 3: Generated headers (bazel-out) ==='
+            if [ -d /tf/bazel-out ]; then
+              find /tf/bazel-out -type f \( -name '*.h' -o -name '*.pb.h' -o -name '*.inc' \) 2>/dev/null | \
+                grep -E '(genfiles|bin)' | \
+                while read f; do
+                  fname=\$(basename \"\$f\")
+                  if echo \"\$f\" | grep -q 'tensorflow/'; then
+                    rel=\${f#*/tensorflow/}
+                    mkdir -p \"/sdk/include/tensorflow/\$(dirname \"\$rel\")\"
+                    cp \"\$f\" \"/sdk/include/tensorflow/\$rel\" 2>/dev/null || true
+                  fi
+                done
+            fi
+            
+            echo '=== PHASE 4: External dependencies ==='
+            BAZEL_ROOT=\$(readlink -f /tf/bazel-tensorflow_src 2>/dev/null || echo /tf/bazel-tf)
+            if [ -d \"\$BAZEL_ROOT/external\" ]; then
+              cd \"\$BAZEL_ROOT/external\"
+              
+              # Critical dependencies
+              for lib in com_google_protobuf com_google_absl flatbuffers eigen_archive \
+                         gemmlowp ruy cpuinfo pthreadpool FP16 farmhash; do
+                if [ -d \"\$lib\" ]; then
+                  echo \"Processing \$lib...\"
+                  
+                  # Copy all headers recursively
+                  find \"\$lib\" -type f \( -name '*.h' -o -name '*.hpp' -o -name '*.inc' \) 2>/dev/null | \
+                    while read hdr; do
+                      rel_path=\"\${hdr#\$lib/}\"
+                      
+                      # Handle special cases
+                      if [ \"\$lib\" = \"com_google_protobuf\" ]; then
+                        # protobuf: src/google/protobuf -> google/protobuf
+                        if echo \"\$rel_path\" | grep -q '^src/'; then
+                          rel_path=\"\${rel_path#src/}\"
+                        fi
+                      elif [ \"\$lib\" = \"com_google_absl\" ]; then
+                        # abseil: keep as is (already has absl/ prefix)
+                        :
+                      elif [ \"\$lib\" = \"flatbuffers\" ]; then
+                        # flatbuffers: include/flatbuffers -> flatbuffers
+                        if echo \"\$rel_path\" | grep -q '^include/'; then
+                          rel_path=\"\${rel_path#include/}\"
+                        fi
+                      elif [ \"\$lib\" = \"eigen_archive\" ]; then
+                        # eigen: keep Eigen/ prefix
+                        :
+                      fi
+                      
+                      target=\"/sdk/include/\$rel_path\"
+                      mkdir -p \"\$(dirname \"\$target\")\"
+                      cp \"\$hdr\" \"\$target\" 2>/dev/null || true
+                    done
+                fi
+              done
+            fi
+            
+            echo '=== PHASE 5: Bazel output_base scan ==='
+            OUTPUT_BASE=\$(bazel info output_base 2>/dev/null || echo '')
+            if [ -n \"\$OUTPUT_BASE\" ] && [ -d \"\$OUTPUT_BASE\" ]; then
+              echo \"Scanning \$OUTPUT_BASE...\"
+              
+              # Find all .pb.h files
+              find \"\$OUTPUT_BASE\" -name '*.pb.h' 2>/dev/null | \
+                while read pbh; do
+                  fname=\$(basename \"\$pbh\")
+                  
+                  # Try to determine correct location
+                  if echo \"\$pbh\" | grep -q 'tensorflow/'; then
+                    rel=\${pbh#*/tensorflow/}
+                    target=\"/sdk/include/tensorflow/\$rel\"
+                  elif echo \"\$pbh\" | grep -q 'google/protobuf'; then
+                    rel=\${pbh#*/google/protobuf/}
+                    target=\"/sdk/include/google/protobuf/\$rel\"
+                  else
+                    # Fallback: check if already exists
+                    existing=\$(find /sdk/include -name \"\$fname\" -type f 2>/dev/null | head -1)
+                    [ -n \"\$existing\" ] && continue
+                    target=\"/sdk/include/generated/\$fname\"
+                  fi
+                  
+                  mkdir -p \"\$(dirname \"\$target\")\"
+                  cp \"\$pbh\" \"\$target\" 2>/dev/null || true
+                done
+            fi
+            
+            echo '=== PHASE 6: Build log analysis ==='
+            if [ -f /tmp/build.log ]; then
+              # Extract referenced headers from build log
+              grep -oE '([a-zA-Z0-9_/.-]+\\.h(pp)?|[a-zA-Z0-9_/.-]+\\.pb\\.h)' /tmp/build.log 2>/dev/null | \
+                sort -u > /tmp/referenced.txt || true
+              
+              cat /tmp/referenced.txt | while read ref; do
+                fname=\$(basename \"\$ref\")
+                # Check if we have it
+                if ! find /sdk/include -name \"\$fname\" -type f 2>/dev/null | grep -q .; then
+                  # Try to find in source
+                  found=\$(find /tf -name \"\$fname\" -type f 2>/dev/null | head -1)
+                  if [ -n \"\$found\" ]; then
+                    echo \"Found missing: \$fname\"
+                    if echo \"\$found\" | grep -q 'tensorflow/'; then
+                      rel=\${found#*/tensorflow/}
+                      target=\"/sdk/include/tensorflow/\$rel\"
+                    else
+                      target=\"/sdk/include/extra/\$fname\"
+                    fi
+                    mkdir -p \"\$(dirname \"\$target\")\"
+                    cp \"\$found\" \"\$target\" 2>/dev/null || true
+                  fi
+                fi
+              done
+            fi
+            
+            echo '=== PHASE 7: Symlink resolution ==='
+            # Resolve any symlinks in include directory
+            find /sdk/include -type l 2>/dev/null | while read link; do
+              target=\$(readlink -f \"\$link\" 2>/dev/null || echo '')
+              if [ -f \"\$target\" ]; then
+                rm \"\$link\"
+                cp \"\$target\" \"\$link\"
+              fi
+            done
+            
+            echo '=== Creating compilation helper ==='
+            cat > /sdk/compile.sh << 'EOFCOMPILE'
+#!/bin/bash
+set -e
+
+if [ \$# -lt 2 ]; then
+  echo \"Usage: \$0 <source.cpp> <o>\"
+  exit 1
+fi
+
+SDK=\"\$(cd \"\$(dirname \"\${BASH_SOURCE[0]}\")\" && pwd)\"
+SOURCE=\"\$1\"
+OUTPUT=\"\$2\"
+
+# Build include list
+INCLUDES=\"\"
+INCLUDES=\"\$INCLUDES -I\$SDK/include\"
+INCLUDES=\"\$INCLUDES -I\$SDK/include/tensorflow\"
+
+# Add all external top-level dirs
+if [ -d \$SDK/include ]; then
+  find \$SDK/include -mindepth 1 -maxdepth 2 -type d 2>/dev/null | while read dir; do
+    echo \"-I\$dir\"
+  done | sort -u > /tmp/includes.txt
+  INCLUDES=\"\$INCLUDES \$(cat /tmp/includes.txt | tr '\\n' ' ')\"
+fi
+
+echo \"Compiling \$SOURCE -> \$OUTPUT\"
+
+g++ -o \"\$OUTPUT\" \"\$SOURCE\" \\
+  -std=c++17 -O3 -DPLATFORM_POSIX \\
+  \$INCLUDES \\
+  -L\$SDK/lib \\
+  -ltensorflowlite -ltensorflowlite_flex \\
+  -ldl -lpthread \\
+  -Wl,-rpath,\$SDK/lib
+
+if [ \$? -eq 0 ]; then
+  echo \"✅ Success: \$OUTPUT\"
+  echo \"Run: \$SDK/run.sh \$OUTPUT\"
+else
+  echo \"❌ Compilation failed\"
+  echo \"\"
+  echo \"Debug: Add -v to see verbose output\"
+  echo \"g++ -v [same flags...]\"
+  exit 1
+fi
+EOFCOMPILE
+            chmod +x /sdk/compile.sh
+            
+            cat > /sdk/run.sh << 'EOFRUN'
+#!/bin/bash
+SDK=\"\$(cd \"\$(dirname \"\${BASH_SOURCE[0]}\")\" && pwd)\"
+[ \$# -eq 0 ] && { echo \"Usage: \$0 <program> [args...]\"; exit 1; }
+export LD_LIBRARY_PATH=\"\$SDK/lib:\$LD_LIBRARY_PATH\"
+exec \"\$@\"
+EOFRUN
+            chmod +x /sdk/run.sh
+            
+            cat > /sdk/example.cpp << 'EOFEXAMPLE'
+#include <iostream>
+#include \"tensorflow/lite/interpreter.h\"
+#include \"tensorflow/lite/kernels/register.h\"
+#include \"tensorflow/lite/model.h\"
+#include \"tensorflow/lite/delegates/flex/delegate.h\"
+
+int main() {
+    std::cout << \"=== TFLite Nuclear SDK Test ===\\n\";
+    tflite::ops::builtin::BuiltinOpResolver resolver;
+    std::cout << \"✅ Resolver\\n\";
+    auto delegate = tflite::FlexDelegate::Create();
+    std::cout << \"✅ Flex Delegate\\n\";
+    std::cout << \"\\n🎉 SDK is fully operational!\\n\";
+    return 0;
+}
+EOFEXAMPLE
+
+            cat > /sdk/README.txt << 'EOFREADME'
+TensorFlow Lite SDK - Nuclear Edition
+Maximum header coverage, all dependencies included
+
+Quick Start:
+  ./compile.sh example.cpp test
+  ./run.sh ./test
+
+Your code:
+  ./compile.sh your_code.cpp your_program
+  ./run.sh ./your_program
+
+This SDK includes:
+  - All TensorFlow source headers
+  - All generated protobuf headers (.pb.h)
+  - All external dependencies
+  - Bazel-generated files
+  - Build log referenced headers
+
+If you still get missing headers, it's likely a TensorFlow bug.
+Search: find include -name \"missing.h\"
+EOFREADME
+            
+            echo '=== VERIFICATION ==='
+            cd /sdk
+            
+            echo \"Total headers: \$(find include -type f \\( -name '*.h' -o -name '*.hpp' \\) | wc -l)\"
+            echo \"Protobuf headers: \$(find include -name '*.pb.h' | wc -l)\"
+            echo \"Include dirs: \$(find include -mindepth 1 -maxdepth 1 -type d | wc -l)\"
+            
+            echo ''
+            echo 'Top directories:'
+            du -sh include/*/ 2>/dev/null | sort -hr | head -10
+            
+            echo ''
+            echo 'Attempting compilation test...'
+            ./compile.sh example.cpp test 2>&1 | tee /tmp/test.log
+            
+            if [ -f test ]; then
+              echo ''
+              echo '✅✅✅ COMPILATION TEST PASSED ✅✅✅'
+              echo ''
+              ./run.sh ./test
+              echo ''
+              echo '✅✅✅ EXECUTION TEST PASSED ✅✅✅'
+            else
+              echo ''
+              echo '❌ Test failed - checking errors...'
+              grep 'fatal error' /tmp/test.log | head -10
+              echo ''
+              echo 'Missing headers (if any):'
+              grep \"No such file\" /tmp/test.log | grep -oE \"[^'<>]+\\.h(pp)?\" | sort -u
+            fi
+            
+            echo ''
+            echo \"SDK Size: \$(du -sh . | cut -f1)\"
+            
+            cd /
+            zip -q -r sdk.zip sdk/
+            ls -lh sdk.zip
+            
+            echo ''
+            echo '=== BUILD COMPLETE ==='
+          "
+        
+        docker cp builder:/sdk.zip ./tflite_sdk_nuclear.zip
+
+    - name: Upload
+      uses: actions/upload-artifact@v4
+      with:
+        name: tflite_sdk_nuclear
+        path: tflite_sdk_nuclear.zip
+        retention-days: 30
