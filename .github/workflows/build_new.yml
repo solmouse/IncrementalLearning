@@ -2,10 +2,6 @@ name: Build TFLite SDK (Simple Method)
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ main ]
-    paths:
-      - '.github/workflows/build_new.yml'
 
 jobs:
   build:
@@ -43,7 +39,6 @@ jobs:
         python3 -m pip install numpy wheel --break-system-packages
         
         echo "=== 2. Download Dependencies (Official Method) ==="
-        # 이게 핵심! 자동으로 서드파티 다운로드
         if [ -f ./tensorflow/lite/tools/make/download_dependencies.sh ]; then
           echo "Running official dependency download script..."
           ./tensorflow/lite/tools/make/download_dependencies.sh
@@ -52,7 +47,6 @@ jobs:
         fi
         
         echo "=== 3. Configure ==="
-        # 자동 설정 (대화형 건너뛰기)
         export PYTHON_BIN_PATH=$(which python3)
         export USE_DEFAULT_PYTHON_LIB_PATH=1
         export TF_NEED_ROCM=0
@@ -60,20 +54,15 @@ jobs:
         export TF_DOWNLOAD_CLANG=0
         export TF_SET_ANDROID_WORKSPACE=0
         
-        # configure 자동 실행
         yes "" | ./configure || echo "Configure done"
         
         echo "=== 4. Build Libraries ==="
-        # C++ 빌드
-        bazel build -c opt //tensorflow/lite:libtensorflowlite
-        
-        # Flex Delegate 빌드
-        bazel build -c opt //tensorflow/lite/delegates/flex:libtensorflowlite_flex
+        bazel build -c opt //tensorflow/lite:libtensorflowlite.so
+        bazel build -c opt //tensorflow/lite/delegates/flex:libtensorflowlite_flex.so
         
         echo "=== 5. Create SDK Structure ==="
         mkdir -p /sdk/{lib,include}
         
-        # 라이브러리 복사
         echo "Copying libraries..."
         find bazel-bin/tensorflow/lite -name "libtensorflowlite.*" -type f | while read lib; do
           echo "  Found: $lib"
@@ -88,44 +77,36 @@ jobs:
         echo "Libraries in SDK:"
         ls -lh /sdk/lib/
         
-        # 헤더 복사 - TensorFlow 소스
         echo "Copying TensorFlow headers..."
         cp -r /tf/tensorflow /sdk/include/
         
-        # 서드파티 헤더 (download_dependencies로 받은 것들)
         echo "Copying third-party headers..."
         if [ -d /tf/tensorflow/lite/tools/make/downloads ]; then
           cd /tf/tensorflow/lite/tools/make/downloads
           
-          # FlatBuffers
           if [ -d flatbuffers ]; then
             cp -r flatbuffers/include/* /sdk/include/ 2>/dev/null || true
           fi
           
-          # Abseil
           if [ -d absl ]; then
             cp -r absl /sdk/include/ 2>/dev/null || true
           fi
           
-          # Eigen
           if [ -d eigen ]; then
             cp -r eigen/Eigen /sdk/include/ 2>/dev/null || true
             cp -r eigen/unsupported /sdk/include/ 2>/dev/null || true
           fi
           
-          # Gemmlowp
           if [ -d gemmlowp ]; then
             cp -r gemmlowp/fixedpoint /sdk/include/ 2>/dev/null || true
             cp -r gemmlowp/internal /sdk/include/ 2>/dev/null || true
           fi
           
-          # 기타
           if [ -d ruy ]; then
             cp -r ruy /sdk/include/ 2>/dev/null || true
           fi
         fi
         
-        # Bazel external (추가 보험)
         BAZEL_ROOT=$(readlink -f /tf/bazel-tensorflow_src 2>/dev/null || echo "")
         if [ -n "$BAZEL_ROOT" ] && [ -d "$BAZEL_ROOT/external" ]; then
           echo "Copying from Bazel external..."
@@ -136,11 +117,9 @@ jobs:
               echo "  Processing $lib..."
               find "$lib" -name "*.h" -o -name "*.hpp" | while read h; do
                 rel="${h#$lib/}"
-                # protobuf: src/ 제거
                 if [ "$lib" = "com_google_protobuf" ]; then
                   rel="${rel#src/}"
                 fi
-                # flatbuffers: include/ 제거
                 if [ "$lib" = "flatbuffers" ]; then
                   rel="${rel#include/}"
                 fi
@@ -152,7 +131,6 @@ jobs:
           done
         fi
         
-        # 생성된 헤더 (.pb.h 등)
         echo "Copying generated headers..."
         find /tf/bazel-bin -name "*.pb.h" -o -name "*.inc" | while read h; do
           rel="${h#/tf/bazel-bin/}"
