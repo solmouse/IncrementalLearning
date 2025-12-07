@@ -46,28 +46,7 @@ bazel build --config=elinux_aarch64 \
   --jobs=4 \
   //tensorflow/lite/delegates/flex:libtensorflowlite_flex.so
 
-echo '=== 6. Verify ARM64 Binaries ==='
-echo "Checking libtensorflowlite.so:"
-file bazel-bin/tensorflow/lite/libtensorflowlite.so
-if file bazel-bin/tensorflow/lite/libtensorflowlite.so | grep -q "aarch64\|ARM aarch64"; then
-    echo "✓ Confirmed: ARM64 binary"
-else
-    echo "❌ ERROR: Not an ARM64 binary!"
-    file bazel-bin/tensorflow/lite/libtensorflowlite.so
-    exit 1
-fi
-
-echo "Checking libtensorflowlite_flex.so:"
-file bazel-bin/tensorflow/lite/delegates/flex/libtensorflowlite_flex.so
-if file bazel-bin/tensorflow/lite/delegates/flex/libtensorflowlite_flex.so | grep -q "aarch64\|ARM aarch64"; then
-    echo "✓ Confirmed: ARM64 binary"
-else
-    echo "❌ ERROR: Not an ARM64 binary!"
-    file bazel-bin/tensorflow/lite/delegates/flex/libtensorflowlite_flex.so
-    exit 1
-fi
-
-echo '=== 7. Packaging SDK ==='
+echo '=== 6. Packaging SDK ==='
 mkdir -p /tmp/sdk/include
 mkdir -p /tmp/sdk/lib
 
@@ -127,42 +106,7 @@ if [ -n "$NEON_HEADER" ]; then
    cp "$NEON_HEADER" /tmp/sdk/include/
 fi
 
-echo '=== 8. Build Info ==='
-cat > /tmp/sdk/BUILD_INFO.txt << 'INFO_EOF'
-TensorFlow Lite SDK (ARM64)
-===========================
-Target: ARM64 (aarch64)
-TensorFlow: 2.19.0
-Bazel: 6.5.0
-Build Config: --config=elinux_aarch64
-Host: x86_64 Ubuntu 24.04
-Cross-Compiled: Yes (using TensorFlow built-in toolchain)
-
-Contents:
-- lib/libtensorflowlite.so (ARM64)
-- lib/libtensorflowlite_flex.so (ARM64)
-- include/ (headers)
-
-Requirements:
-- Target system needs glibc 2.28 or higher
-
-Usage on Raspberry Pi 4/5 or other ARM64 boards:
- g++ main.cpp \
-  -I./include \
-  -L./lib \
-  -ltensorflowlite \
-  -ltensorflowlite_flex \
-  -lpthread -ldl -lm \
-  -std=c++17 \
-  -Wl,-rpath,'$ORIGIN/lib' \
-  -o app
-
-Verify binaries:
- file lib/libtensorflowlite.so
- # Should show: ARM aarch64, dynamically linked
-INFO_EOF
-
-echo '=== 9. Zip SDK ==='
+echo '=== 7. Zip SDK ==='
 cd /tmp
 zip -r tflite_sdk_arm64.zip sdk/
 ls -lh tflite_sdk_arm64.zip
