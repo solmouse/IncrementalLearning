@@ -6,14 +6,29 @@ apt-get update
 apt-get install -y git wget curl build-essential python3 python3-pip python3-dev openjdk-11-jdk zip unzip \
   gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 
-echo '=== 2. Clone TensorFlow 2.19.0 ==='
+echo '=== 2. Install Bazel 6.5.0 ==='
+wget https://github.com/bazelbuild/bazel/releases/download/6.5.0/bazel-6.5.0-linux-x86_64 -O /usr/local/bin/bazel
+chmod +x /usr/local/bin/bazel
+bazel --version
+
+echo '=== 3. Clone TensorFlow 2.19.0 ==='
 git clone --depth 1 --branch v2.19.0 https://github.com/tensorflow/tensorflow.git /tensorflow_src
 cd /tensorflow_src
 
-echo '=== 3. Python Dependencies ==='
+echo '=== 3.5. Check Protobuf Version ==='
+PROTOBUF_VER=$(grep -oP 'protobuf-\K[0-9.]+' WORKSPACE | head -1)
+echo "✓ TensorFlow will use Protobuf: $PROTOBUF_VER"
+if [[ "$PROTOBUF_VER" != "3.24"* ]]; then
+    echo "⚠️  Note: Expected Protobuf 3.24.x but found $PROTOBUF_VER"
+    echo "⚠️  Continuing with TensorFlow's default version for compatibility..."
+else
+    echo "✓ Using expected Protobuf 3.24.x"
+fi
+
+echo '=== 4. Python Dependencies ==='
 python3 -m pip install numpy wheel --break-system-packages
 
-echo '=== 4. Configure ARM64 CROSSTOOL ==='
+echo '=== 5. Configure ARM64 CROSSTOOL ==='
 mkdir -p tools/arm_compiler
 cat > tools/arm_compiler/BUILD << 'BEOF'
 package(default_visibility = ['//visibility:public'])
@@ -106,7 +121,7 @@ CEOF
 
 echo '✓ CROSSTOOL configured'
 
-echo '=== 5. Configure .bazelrc ==='
+echo '=== 6. Configure .bazelrc ==='
 cat >> .bazelrc << 'BZEF'
 
 # ARM64 Cross-Compilation Configuration
@@ -119,8 +134,8 @@ BZEF
 
 echo '✓ .bazelrc configured'
 
-echo '=== 6. Build for ARM64 ==='
-/tensorflow_src/tools/bazel build -c opt \
+echo '=== 7. Build for ARM64 ==='
+bazel build -c opt \
   --config=monolithic \
   --config=rpi \
   --define=tflite_with_select_tf_ops=true \
@@ -129,11 +144,11 @@ echo '=== 6. Build for ARM64 ==='
   //tensorflow/lite:libtensorflowlite.so \
   //tensorflow/lite/delegates/flex:libtensorflowlite_flex.so
 
-echo '=== 7. Verify ARM64 Binaries ==='
+echo '=== 8. Verify ARM64 Binaries ==='
 file bazel-bin/tensorflow/lite/libtensorflowlite.so
 file bazel-bin/tensorflow/lite/delegates/flex/libtensorflowlite_flex.so
 
-echo '=== 8. Packaging SDK ==='
+echo '=== 9. Packaging SDK ==='
 mkdir -p /tmp/sdk/include
 mkdir -p /tmp/sdk/lib
 
@@ -193,7 +208,7 @@ if [ -n "$NEON_HEADER" ]; then
    cp "$NEON_HEADER" /tmp/sdk/include/
 fi
 
-echo '=== 9. Build Info ==='
+echo '=== 10. Build Info ==='
 cat > /tmp/sdk/BUILD_INFO.txt << 'INFO_EOF'
 TensorFlow Lite SDK (ARM64)
 ===========================
@@ -224,7 +239,7 @@ Verify binaries:
  # Should show: ARM aarch64
 INFO_EOF
 
-echo '=== 10. Zip SDK ==='
+echo '=== 11. Zip SDK ==='
 cd /tmp
 zip -r tflite_sdk_arm64.zip sdk/
 ls -lh tflite_sdk_arm64.zip
