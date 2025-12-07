@@ -1,0 +1,44 @@
+name: Build TFLite SDK x86_64
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/build_with_header_x86.yml'
+      - 'scripts/build_tflite_x86.sh'
+
+jobs:
+  build_sdk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 500
+    
+    steps:
+    - name: Checkout User Repo
+      uses: actions/checkout@v4
+    
+    - name: Free disk space
+      run: |
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /opt/ghc
+        sudo rm -rf /usr/local/lib/android
+        sudo apt-get clean
+        df -h
+
+    - name: Build and Package SDK inside Docker
+      run: |
+        docker run --name builder \
+          -v ${{ github.workspace }}:/workspace \
+          ubuntu:24.04 \
+          bash /workspace/scripts/build_tflite_x86.sh
+        
+        echo '=== Extracting SDK from container ==='
+        docker cp builder:/tmp/tflite_sdk_x86.zip ./tflite_sdk_x86.zip
+        ls -lh tflite_sdk_x86.zip
+
+    - name: Upload SDK Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: tflite_sdk_x86_64
+        path: tflite_sdk_x86.zip
+        retention-days: 7
