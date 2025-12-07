@@ -1,0 +1,223 @@
+name: Build TFLite SDK (Simple Method)
+
+on:
+    push:
+      branches: [ main ]
+      paths:
+        - '.github/workflows/build_new.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 600
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+    
+    - name: Free Space
+      run: |
+        sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android
+        sudo apt-get clean
+
+    - name: Create Build Script
+      run: |
+        cat << 'EOF' > build.sh
+        #!/bin/bash
+        set -e
+        
+        echo "=== 1. Setup ==="
+        apt-get update
+        apt-get install -y git wget build-essential python3 python3-pip openjdk-11-jdk zip rsync curl
+        
+        # Bazel
+        wget -q https://github.com/bazelbuild/bazel/releases/download/6.5.0/bazel-6.5.0-linux-x86_64 -O /usr/local/bin/bazel
+        chmod +x /usr/local/bin/bazel
+        
+        # TensorFlow
+        git clone --depth 1 --branch v2.19.0 https://github.com/tensorflow/tensorflow.git /tf
+        cd /tf
+        
+        # Python deps
+        python3 -m pip install numpy wheel --break-system-packages
+        
+        echo "=== 2. Download Dependencies (Official Method) ==="
+        if [ -f ./tensorflow/lite/tools/make/download_dependencies.sh ]; then
+          echo "Running official dependency download script..."
+          ./tensorflow/lite/tools/make/download_dependencies.sh
+        else
+          echo "⚠️ download_dependencies.sh not found (TF 2.5+ doesn't need it)"
+        fi
+        
+        echo "=== 3. Configure ==="
+        export PYTHON_BIN_PATH=$(which python3)
+        export USE_DEFAULT_PYTHON_LIB_PATH=1
+        export TF_NEED_ROCM=0
+        export TF_NEED_CUDA=0
+        export TF_DOWNLOAD_CLANG=0
+        export TF_SET_ANDROID_WORKSPACE=0
+        
+        yes "" | ./configure || echo "Configure done"
+        
+        echo "=== 4. Build Libraries ==="
+        bazel build -c opt //tensorflow/lite:libtensorflowlite.so
+        bazel build -c opt //tensorflow/lite/delegates/flex:libtensorflowlite_flex.so
+        
+        echo "=== 5. Create SDK Structure ==="
+        mkdir -p /sdk/{lib,include}
+        
+        echo "Copying libraries..."
+        find bazel-bin/tensorflow/lite -name "libtensorflowlite.*" -type f | while read lib; do
+          echo "  Found: $lib"
+          cp "$lib" /sdk/lib/
+        done
+        
+        find bazel-bin/tensorflow/lite/delegates/flex -name "libtensorflowlite_flex.*" -type f | while read lib; do
+          echo "  Found: $lib"
+          cp "$lib" /sdk/lib/
+        done
+        
+        echo "Libraries in SDK:"
+        ls -lh /sdk/lib/
+        
+        echo "Copying TensorFlow headers..."
+        cp -r /tf/tensorflow /sdk/include/
+        
+        echo "Copying third-party headers..."
+        if [ -d /tf/tensorflow/lite/tools/make/downloads ]; then
+          cd /tf/tensorflow/lite/tools/make/downloads
+          
+          if [ -d flatbuffers ]; then
+            cp -r flatbuffers/include/* /sdk/include/ 2>/dev/null || true
+          fi
+          
+          if [ -d absl ]; then
+            cp -r absl /sdk/include/ 2>/dev/null || true
+          fi
+          
+          if [ -d eigen ]; then
+            cp -r eigen/Eigen /sdk/include/ 2>/dev/null || true
+            cp -r eigen/unsupported /sdk/include/ 2>/dev/null || true
+          fi
+          
+          if [ -d gemmlowp ]; then
+            cp -r gemmlowp/fixedpoint /sdk/include/ 2>/dev/null || true
+            cp -r gemmlowp/internal /sdk/include/ 2>/dev/null || true
+          fi
+          
+          if [ -d ruy ]; then
+            cp -r ruy /sdk/include/ 2>/dev/null || true
+          fi
+        fi
+        
+        BAZEL_ROOT=$(readlink -f /tf/bazel-tensorflow_src 2>/dev/null || echo "")
+        if [ -n "$BAZEL_ROOT" ] && [ -d "$BAZEL_ROOT/external" ]; then
+          echo "Copying from Bazel external..."
+          cd "$BAZEL_ROOT/external"
+          
+          for lib in com_google_protobuf com_google_absl flatbuffers eigen_archive; do
+            if [ -d "$lib" ]; then
+              echo "  Processing $lib..."
+              find "$lib" -name "*.h" -o -name "*.hpp" | while read h; do
+                rel="${h#$lib/}"
+                if [ "$lib" = "com_google_protobuf" ]; then
+                  rel="${rel#src/}"
+                fi
+                if [ "$lib" = "flatbuffers" ]; then
+                  rel="${rel#include/}"
+                fi
+                target="/sdk/include/$rel"
+                mkdir -p "$(dirname "$target")"
+                cp "$h" "$target" 2>/dev/null || true
+              done
+            fi
+          done
+        fi
+        
+        echo "Copying generated headers..."
+        find /tf/bazel-bin -name "*.pb.h" -o -name "*.inc" | while read h; do
+          rel="${h#/tf/bazel-bin/}"
+          target="/sdk/include/$rel"
+          mkdir -p "$(dirname "$target")"
+          cp "$h" "$target" 2>/dev/null || true
+        done
+        
+        echo "=== 6. Helper Scripts ==="
+        cat > /sdk/compile.sh << 'EOFCOMPILE'
+        #!/bin/bash
+        set -e
+        [ $# -lt 2 ] && { echo "Usage: $0 <source.cpp> <o>"; exit 1; }
+        SDK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        INCLUDES="-I$SDK/include"
+        g++ -o "$2" "$1" -std=c++17 -O3 \
+          $INCLUDES \
+          -L$SDK/lib \
+          -ltensorflowlite -ltensorflowlite_flex \
+          -ldl -lpthread \
+          -Wl,-rpath,$SDK/lib
+        echo "✅ Built: $2"
+        EOFCOMPILE
+        chmod +x /sdk/compile.sh
+        
+        cat > /sdk/run.sh << 'EOFRUN'
+        #!/bin/bash
+        SDK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        export LD_LIBRARY_PATH="$SDK/lib:$LD_LIBRARY_PATH"
+        exec "$@"
+        EOFRUN
+        chmod +x /sdk/run.sh
+        
+        echo "=== 7. Verification ==="
+        cat > /sdk/example.cpp << 'EOFTEST'
+        #include <iostream>
+        #include "tensorflow/lite/interpreter.h"
+        #include "tensorflow/lite/kernels/register.h"
+        #include "tensorflow/lite/delegates/flex/delegate.h"
+        int main() {
+            std::cout << "Testing...\n";
+            tflite::ops::builtin::BuiltinOpResolver resolver;
+            auto delegate = tflite::FlexDelegate::Create();
+            std::cout << "✅ Works!\n";
+            return 0;
+        }
+        EOFTEST
+        
+        cd /sdk
+        if ./compile.sh example.cpp test 2>&1 | tee /tmp/test.log; then
+          if [ -f test ]; then
+            ./run.sh ./test
+            echo "✅✅✅ VERIFIED ✅✅✅"
+          fi
+        else
+          echo "❌ Test failed:"
+          grep "fatal error" /tmp/test.log | head -3
+        fi
+        
+        echo "=== 8. Stats ==="
+        echo "Libs: $(ls /sdk/lib/ | wc -l)"
+        echo "Headers: $(find /sdk/include -name '*.h' | wc -l)"
+        ls -lh /sdk/lib/
+        
+        echo "=== 9. Package ==="
+        cd /
+        zip -q -r sdk.zip sdk/
+        ls -lh sdk.zip
+        EOF
+        
+        chmod +x build.sh
+
+    - name: Build
+      run: |
+        docker run --name builder \
+          -v ${{ github.workspace }}:/workspace \
+          ubuntu:24.04 \
+          /workspace/build.sh
+        
+        docker cp builder:/sdk.zip ./tflite_sdk_simple.zip
+
+    - name: Upload
+      uses: actions/upload-artifact@v4
+      with:
+        name: tflite_sdk_simple
+        path: tflite_sdk_simple.zip
+        retention-days: 30
