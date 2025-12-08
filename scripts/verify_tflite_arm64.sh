@@ -1,9 +1,19 @@
 #!/bin/bash
 set -e
 
-echo '=== 1. Install Dependencies for ARM Cross-Compilation ==='
+echo '=== 1. Install Dependencies for ARM Cross-Compilation & Execution ==='
 apt-get update
-apt-get install -y build-essential gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+dpkg --add-architecture arm64
+apt-get update
+
+apt-get install -y \
+    build-essential \
+    gcc-aarch64-linux-gnu \
+    g++-aarch64-linux-gnu \
+    libc6-arm64-cross 
+
+echo '✓ ARM64 system libraries (ld-linux-aarch64.so.1) installed.'
 
 echo '=== 2. Define Paths and Verify Files ==='
 SDK_DIR="/workspace/sdk"
