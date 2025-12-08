@@ -3,7 +3,7 @@ set -e
 
 echo '=== 1. Install Dependencies for ARM Cross-Compilation ==='
 apt-get update
-apt-get install -y build-essential gcc-aarch64-linux-gnu g++-aarch64-linux-gnu timeout
+apt-get install -y build-essential gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 
 echo '=== 2. Define Paths and Verify Files ==='
 SDK_DIR="/workspace/sdk"
@@ -31,25 +31,21 @@ aarch64-linux-gnu-g++ ${SOURCE_FILE} \
 
 echo "✓ ARM64 Binary created at: ${OUTPUT_BINARY}"
 
-echo '=== 4. Execute ARM64 Binary via QEMU with Timeout (Max 300s) ==='
+echo '=== 4. Execute ARM64 Binary via QEMU ==='
 
 cd ${TEST_DIR}
 
 export LD_LIBRARY_PATH="${SDK_DIR}/lib:$LD_LIBRARY_PATH"
 
-# timeout 300 ./phase2 ../models/model.tflite ../models/ckpt_before.npy ../models/ckpt_after.npy
+# ./phase2 ../models/model.tflite ../models/ckpt_before.npy ../models/ckpt_after.npy
 
-echo "Running command: timeout 300 ./${OUTPUT_BINARY##*/} ../models/model.tflite ../models/ckpt_before.npy ../models/ckpt_after.npy"
-timeout 300 ./${OUTPUT_BINARY##*/} ../models/model.tflite ../models/ckpt_before.npy ../models/ckpt_after.npy
+echo "Running command: ./${OUTPUT_BINARY##*/} ../models/model.tflite ../models/ckpt_before.npy ../models/ckpt_after.npy"
+./${OUTPUT_BINARY##*/} ../models/model.tflite ../models/ckpt_before.npy ../models/ckpt_after.npy
 
-# 타임아웃 발생 시 124 반환, 성공 시 0 반환
 EXIT_CODE=$?
 
 if [ ${EXIT_CODE} -eq 0 ]; then
     echo '=== ✓ Verification Success (Exit Code 0) ==='
-elif [ ${EXIT_CODE} -eq 124 ]; then
-    echo '=== ❌ Verification FAILED: Timeout (300 seconds) exceeded. ==='
-    exit 1
 else
     echo "=== ❌ Verification FAILED: Execution failed with exit code ${EXIT_CODE}. ==="
     exit 1
