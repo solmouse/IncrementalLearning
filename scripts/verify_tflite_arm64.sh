@@ -1,19 +1,9 @@
 #!/bin/bash
 set -e
 
-echo '=== 1. Install Dependencies for ARM Cross-Compilation & Execution ==='
+echo '=== 1. Install Basic Tools ==='
 apt-get update
-
-dpkg --add-architecture arm64
-apt-get update
-
-apt-get install -y \
-    build-essential \
-    gcc-aarch64-linux-gnu \
-    g++-aarch64-linux-gnu \
-    libc6-arm64-cross 
-
-echo '✓ ARM64 system libraries (ld-linux-aarch64.so.1) installed.'
+apt-get install -y build-essential file
 
 echo '=== 2. Define Paths and Verify Files ==='
 SDK_DIR="/workspace/sdk"
@@ -28,9 +18,9 @@ test -f "${SOURCE_FILE}" || { echo "❌ ERROR: Source file not found: ${SOURCE_F
 test -f "${MODEL_DIR}/model.tflite" || { echo "❌ ERROR: Model file not found: ${MODEL_DIR}/model.tflite"; exit 1; }
 echo "✅ All required files found."
 
-echo '=== 3. ARM64 Cross-Compile C++ Code ==='
+echo '=== 3. Compile ARM64 Binary ==='
 
-aarch64-linux-gnu-g++ ${SOURCE_FILE} \
+g++ ${SOURCE_FILE} \
     -I${SDK_DIR}/include \
     -L${SDK_DIR}/lib \
     -ltensorflowlite -ltensorflowlite_flex \
@@ -41,13 +31,15 @@ aarch64-linux-gnu-g++ ${SOURCE_FILE} \
 
 echo "✓ ARM64 Binary created at: ${OUTPUT_BINARY}"
 
-echo '=== 4. Execute ARM64 Binary via QEMU ==='
+# 바이너리 아키텍처 확인
+echo "Verifying binary architecture:"
+file ${OUTPUT_BINARY}
+
+echo '=== 4. Execute ARM64 Binary ==='
 
 cd ${TEST_DIR}
 
 export LD_LIBRARY_PATH="${SDK_DIR}/lib:$LD_LIBRARY_PATH"
-
-# ./phase2 ../models/model.tflite ../models/ckpt_before.npy ../models/ckpt_after.npy
 
 echo "Running command: ./${OUTPUT_BINARY##*/} ../models/model.tflite ../models/ckpt_before.npy ../models/ckpt_after.npy"
 ./${OUTPUT_BINARY##*/} ../models/model.tflite ../models/ckpt_before.npy ../models/ckpt_after.npy
