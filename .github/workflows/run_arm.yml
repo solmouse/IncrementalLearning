@@ -1,0 +1,44 @@
+name: Verify TFLite ARM64
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - '.github/workflows/verify_tflite_arm64.yml'
+      - 'scripts/verify_tflite_arm64.sh'
+      - 'pi/cpp_pi_test_251208/tflite_sdk_arm64.tar.gz' 
+
+jobs:
+  verify_arm64:
+    name: 1. Verify and Run ARM64 Binary via QEMU
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+      - name: Checkout User Repo (Get Source Code and Tar File)
+        uses: actions/checkout@v4
+        
+      # 1. SDK 압축 해제
+      - name: Unpack TFLite SDK (tar.gz)
+        run: |
+          SDK_FILE="pi/cpp_pi_test_251208/tflite_sdk_arm64.tar.gz"
+          
+          tar -xzvf ${SDK_FILE}
+          
+          echo "Unpacked SDK directory structure:"
+          ls -R sdk/ || tree sdk/
+          
+      # 2. QEMU를 사용한 ARM64 환경 설정
+      - name: Set up QEMU for ARM64 Execution
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: all
+
+      # 3. Docker 컨테이너에서 검증 스크립트 실행
+      - name: Run Verification Script (Cross-Compile & Execute)
+        run: |
+          docker run --name verifier \
+            -v ${{ github.workspace }}:/workspace \
+            ubuntu:24.04 \
+            bash /workspace/scripts/verify_tflite_arm64.sh
