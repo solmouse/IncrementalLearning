@@ -10,7 +10,7 @@ bazel-*
 *.zip
 
 # TensorFlow / Keras artifacts
-**/work/cache/
+**/work/
 **/*.cache
 **/*.cache.*
 **/*.cache.index
