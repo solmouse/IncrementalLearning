@@ -1,6 +1,31 @@
+# Native / build artifacts
 libs/
 *.so
 *.o
 bazel-*
-EOF
+
+# Datasets & large binaries
 *.jpg
+*.npy
+*.zip
+
+# TensorFlow / Keras artifacts
+**/work/cache/
+**/*.cache
+**/*.cache.*
+**/*.cache.index
+**/*.cache.data-*
+
+**/saved_model/
+**/saved_model.pb
+**/variables/
+**/variables.data-*
+**/variables.index
+
+**/ckpt_before/
+**/ckpt_after/
+**/test_batches/
+
+# Python artifacts
+**/__pycache__/
+**/*.pyc
