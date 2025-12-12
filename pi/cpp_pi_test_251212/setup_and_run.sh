@@ -8,14 +8,24 @@ echo "=========================================="
 # 1. 현재 위치 확인
 if [ ! -f "tflite_sdk_arm64.tar.gz" ]; then
     echo "X ERROR: tflite_sdk_arm64.tar.gz not found!"
-    echo "Please run this script from pi/cpp_pi_test_251208/ directory"
     exit 1
 fi
 
-# 2. 압축 해제
+if [ ! -f "data.tar.gz" ]; then
+    echo "X ERROR: data.tar.gz not found!"
+    exit 1
+fi
+
+# 2-1. SDK 압축 해제
 echo ""
-echo "=== Extracting SDK ==="
+echo "=== Extracting TFLite SDK ==="
 tar -xzvf tflite_sdk_arm64.tar.gz
+
+# 2-2. 데이터 압축 해제
+echo ""
+echo "=== Extracting data ==="
+tar -xzvf data.tar.gz
+
 cd sdk
 
 # 3. glibc 버전 확인
@@ -35,6 +45,9 @@ ls -lh tests/phase2_with_flex.cpp
 echo ""
 echo "Models:"
 ls -lh models/
+echo ""
+echo "Data:"
+ls -lh ../data/
 
 # 5. 컴파일 (변경)
 echo ""
@@ -44,8 +57,7 @@ g++ tests/phase2_with_flex.cpp tests/cnpy.cpp \
     -L./lib \
     -ltensorflowlite \
     -lpthread -ldl -lm -lz \
-    -std=c++17 \
-    -O3 \
+    -std=c++17 -O3 \
     -Wl,-rpath,'$ORIGIN/../lib' \
     -o tests/phase2_pi
 
@@ -72,11 +84,11 @@ export LD_LIBRARY_PATH=../lib:$LD_LIBRARY_PATH
     ../models/model.tflite \
     ../models/ckpt_before.npy \
     ../models/ckpt_after.npy \
-    ../data/domainB_images.npy \
-    ../data/domainB_labels.npy \
-    ../data/domainA_images.npy \
-    ../data/domainA_labels.npy
-
+    ../../data/domainB_images.npy \
+    ../../data/domainB_labels.npy \
+    ../../data/domainA_images.npy \
+    ../../data/domainA_labels.npy
+    
 EXIT_CODE=$?
 
 if [ $EXIT_CODE -eq 0 ]; then

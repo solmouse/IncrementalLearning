@@ -19,6 +19,7 @@ IncrementalLearning/
 └── pi/
     └── cpp_pi_test_251212/
         ├── tflite_sdk_arm64.tar.gz
+        ├── data.tar.gz
         └── setup_and_run.sh
 ```
 
@@ -35,29 +36,31 @@ cd IncrementalLearning/pi/cpp_pi_test_251212/
 
 # 압축 해제
 tar -xzvf tflite_sdk_arm64.tar.gz
+tar -xzvf data.tar.gz
 cd sdk
 
 # 컴파일 (변경)
 g++ tests/phase2_with_flex.cpp tests/cnpy.cpp \
-    -I./include -L./lib \
+    -I./include \
+    -L./lib \
     -ltensorflowlite \
     -lpthread -ldl -lm -lz \
     -std=c++17 -O3 \
     -Wl,-rpath,'$ORIGIN/../lib' \
     -o tests/phase2_pi
-
+    
 # 실행 (변경)
 cd tests
 export LD_LIBRARY_PATH=../lib:$LD_LIBRARY_PATH
 
 ./phase2_pi \
-  ../models/model.tflite \
-  ../models/ckpt_before.npy \
-  ../models/ckpt_after.npy \
-  ../data/domainB_images.npy \
-  ../data/domainB_labels.npy \
-  ../data/domainA_images.npy \
-  ../data/domainA_labels.npy
+    ../models/model.tflite \
+    ../models/ckpt_before.npy \
+    ../models/ckpt_after.npy \
+    ../../data/domainB_images.npy \
+    ../../data/domainB_labels.npy \
+    ../../data/domainA_images.npy \
+    ../../data/domainA_labels.npy
 ```
 
 ## 3. 문제 해결
