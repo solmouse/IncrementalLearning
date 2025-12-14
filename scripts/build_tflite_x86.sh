@@ -57,9 +57,23 @@ cp bazel-bin/tensorflow/lite/delegates/flex/libtensorflowlite_flex.so /tmp/sdk/l
 echo 'Copying Source Headers...'
 find tensorflow/lite \( -name '*.h' -o -name '*.hpp' -o -name '*.inc' \) -exec cp --parents {} /tmp/sdk/include/ \;
 
+echo 'Copying TensorFlow Compiler Headers...'
+if [ -d "tensorflow/compiler" ]; then
+    find tensorflow/compiler \( -name '*.h' -o -name '*.hpp' -o -name '*.inc' \) -exec cp --parents {} /tmp/sdk/include/ \;
+    echo "✓ Copied tensorflow/compiler headers"
+else
+    echo "⚠️  tensorflow/compiler directory not found in source"
+fi
+
 echo 'Copying Generated Headers...'
 cd bazel-bin
 find tensorflow/lite \( -name '*.pb.h' -o -name '*.inc' \) -exec cp --parents {} /tmp/sdk/include/ \;
+
+if [ -d "tensorflow/compiler" ]; then
+    find tensorflow/compiler \( -name '*.pb.h' -o -name '*.inc' \) -exec cp --parents {} /tmp/sdk/include/ \;
+    echo "✓ Copied generated tensorflow/compiler headers"
+fi
+
 cd /tensorflow_src
 
 echo 'Copying External Dependencies...'
