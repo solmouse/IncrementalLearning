@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-MobileNetV2 Class Incremental Learning (True CIL)
+MobileNetV2 Class Incremental Learning
 """
 
 import os, time, tarfile, shutil, json
@@ -10,7 +10,6 @@ import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers
 from tensorflow.keras.applications.mobilenet_v2 import MobileNetV2, preprocess_input
-
 
 # =============================================================================
 # Paths
@@ -23,19 +22,21 @@ def pick_root():
 
 ROOT = pick_root()
 
-BASE_DIR = r"YOUR BASE DIR"   # TODO: 예) r"D:\tf_runs\mobilenetv2_cil"
-WORK_DIR  = os.path.join(BASE_DIR, "work_true_cil")
-DATA_DIR  = os.path.join(BASE_DIR, "data_true_cil")
-CACHE_DIR = os.path.join(WORK_DIR, "cache")
-CKPT_DIR  = os.path.join(WORK_DIR, "ckpt")
-EXPORT_DIR= os.path.join(WORK_DIR, "export")
+BASE_DIR = r"YOUR BASE DIR"   # TODO: 예) r"D:\tf_runs\mobilenetv2_true_cil"
+if BASE_DIR.strip().upper() == "YOUR BASE DIR":
+    BASE_DIR = os.path.join(ROOT, "tf_runs", "mobilenetv2_true_cil")
+
+WORK_DIR   = os.path.join(BASE_DIR, "work_true_cil")
+DATA_DIR   = os.path.join(BASE_DIR, "data_true_cil")
+CACHE_DIR  = os.path.join(WORK_DIR, "cache")
+CKPT_DIR   = os.path.join(WORK_DIR, "ckpt")
+EXPORT_DIR = os.path.join(WORK_DIR, "export")
 
 for d in [WORK_DIR, DATA_DIR, CACHE_DIR, CKPT_DIR, EXPORT_DIR]:
     os.makedirs(d, exist_ok=True)
 
-
 # =============================================================================
-# Hyperparameters
+# Hyperparameters (보존 우선 기본값)
 # =============================================================================
 IMG_SIZE = 224
 BATCH_SIZE = 32
@@ -51,19 +52,23 @@ NUM_EPOCHS_PHASE1 = 10
 WARMUP_EPOCHS_PHASE1 = 3
 
 NUM_EPOCHS_PHASE2 = 6
-STEPS_PER_EPOCH_PHASE2 = 60  # alternating new/reh steps
+STEPS_PER_EPOCH_PHASE2 = 60  # 너무 줄이면 new 학습이 약해질 수 있음. 필요시 80~100 권장.
+
+# new:reh = 1:3
+NEW_TO_REH_CYCLE = 4  # step_mod==0 -> new, else -> rehearsal
 
 HEAD_LR = 1e-3
-BASE_LR = 5e-5
-FINE_TUNE_FRACTION = 0.25
+BASE_LR = 1e-5                 # ↓ 보존 강화
+FINE_TUNE_FRACTION = 0.15      # ↓ 보존 강화
+UNFREEZE_FRACTION = 0.66       # ↑ 더 늦게 unfreeze
 
 LABEL_SMOOTHING = 0.10
 CLIP_NORM = 1.0
 
 KD_T = 2.0
-KD_LAMBDA = 1.0
+KD_LAMBDA = 2.0                # ↑ 보존 강화 (기존 1.0)
 
-EXEMPLARS_PER_CLASS = 16
+EXEMPLARS_PER_CLASS = 96       # ↑ 보존 강화 (메모리/시간 허용되면 128도 가능)
 
 BIC_STEPS = 200
 BIC_LR = 5e-3
@@ -73,6 +78,22 @@ PREFETCH_BUFFER = 1
 np.random.seed(SEED)
 tf.random.set_seed(SEED)
 
+# =============================================================================
+# Optimizer helper (Keras3 Unknown variable 방지)
+# =============================================================================
+def make_adam(lr: float):
+    try:
+        from tensorflow.keras.optimizers.legacy import Adam
+        return Adam(learning_rate=lr)
+    except Exception:
+        return tf.keras.optimizers.Adam(learning_rate=lr)
+
+def make_sgd(lr: float):
+    try:
+        from tensorflow.keras.optimizers.legacy import SGD
+        return SGD(learning_rate=lr)
+    except Exception:
+        return tf.keras.optimizers.SGD(learning_rate=lr)
 
 # =============================================================================
 # Data utils (flowers)
@@ -121,8 +142,9 @@ def make_ds_from_dir(root_dir, class_names, batch_size, training,
                      subset=None, validation_split=None,
                      use_cache=False, cache_tag=None):
     """
-    subset(=training/validation)으로 split을 사용할 때는
-    image_dataset_from_directory 단계에서 shuffle=True 강제
+    split 왜곡 방지:
+    - subset 사용 시 shuffle=True 강제 (image_dataset_from_directory 단계에서)
+    - training=True일 때만 추가 ds.shuffle()
     """
     use_subset = (subset is not None)
     if use_subset and validation_split is None:
@@ -135,7 +157,7 @@ def make_ds_from_dir(root_dir, class_names, batch_size, training,
         class_names=class_names,
         image_size=(IMG_SIZE, IMG_SIZE),
         batch_size=batch_size,
-        shuffle=True if use_subset else training,  # 중요
+        shuffle=True if use_subset else training,
         seed=SEED,
         validation_split=(float(validation_split) if use_subset else None),
         subset=(subset if use_subset else None),
@@ -145,54 +167,14 @@ def make_ds_from_dir(root_dir, class_names, batch_size, training,
         tag = cache_tag if cache_tag is not None else f"{Path(root_dir).name}_{subset or ('train' if training else 'val')}"
         ds = ds.cache(os.path.join(CACHE_DIR, f"{tag}.cache"))
 
-    ds = ds.map(lambda x, y: preprocess(x, y, training=training), num_parallel_calls=tf.data.AUTOTUNE)
+    ds = ds.map(lambda x, y: preprocess(x, y, training=training),
+                num_parallel_calls=tf.data.AUTOTUNE)
 
     if training:
         ds = ds.shuffle(1000, seed=SEED, reshuffle_each_iteration=True)
 
     ds = ds.prefetch(PREFETCH_BUFFER)
     return ds
-
-def make_ds_full_and_split(root_dir, class_names, batch_size, val_ratio=0.2, shuffle_buf=5000, cache_tag=None):
-    """
-    ✅ eval/calib용 안전 split:
-    - subset/validation_split을 쓰지 않고 전체를 로드
-    - (batch 단위) 셔플 후 take/skip으로 직접 분할
-    => val에 특정 클래스만 몰리는 현상 방지
-    """
-    ds_all = keras.preprocessing.image_dataset_from_directory(
-        directory=str(root_dir),
-        labels="inferred",
-        label_mode="int",
-        class_names=class_names,
-        image_size=(IMG_SIZE, IMG_SIZE),
-        batch_size=batch_size,
-        shuffle=False,  # 여기서는 우리가 직접 shuffle할 거라 False
-        seed=SEED,
-    )
-
-    # 필요하면 캐시 (cardinality 안정화에도 도움)
-    if cache_tag is not None:
-        ds_all = ds_all.cache(os.path.join(CACHE_DIR, f"{cache_tag}.cache"))
-
-    ds_all = ds_all.map(lambda x, y: preprocess(x, y, training=False), num_parallel_calls=tf.data.AUTOTUNE)
-
-    # batch-stream을 셔플(고정)한 뒤 split
-    ds_all = ds_all.shuffle(shuffle_buf, seed=SEED, reshuffle_each_iteration=False)
-
-    card = tf.data.experimental.cardinality(ds_all).numpy()
-    if card < 0:
-        # 드물지만 안전장치
-        ds_all = ds_all.cache()
-        card = tf.data.experimental.cardinality(ds_all).numpy()
-
-    val_batches = max(1, int(card * float(val_ratio)))
-    train_batches = max(1, card - val_batches)
-
-    val_ds = ds_all.take(val_batches).prefetch(PREFETCH_BUFFER)
-    train_ds = ds_all.skip(val_batches).take(train_batches).prefetch(PREFETCH_BUFFER)
-    return train_ds, val_ds
-
 
 # =============================================================================
 # Exemplar Memory
@@ -201,8 +183,8 @@ class ExemplarMemory:
     def __init__(self, exemplars_per_class=16):
         self.m = exemplars_per_class
         self.images = None    # (N,H,W,3) float32 (preprocess_input applied)
-        self.labels = None    # (N,) int32
-        self.t_logits = None  # (N,C) float32
+        self.labels = None    # (N,) int32 (global label space)
+        self.t_logits = None  # (N,C_old) float32 (teacher logits for old classes)
         self.class_to_indices = {}
 
     def __len__(self):
@@ -292,7 +274,6 @@ class ExemplarMemory:
         mem.class_to_indices = z["class_to_indices"].item()
         return mem
 
-
 # =============================================================================
 # Model building
 # =============================================================================
@@ -340,6 +321,7 @@ def build_keras_models(num_classes, backbone_fraction):
     return base, head, full, feat_model
 
 def expand_head_weights(old_head: keras.Sequential, new_head: keras.Sequential, old_c: int, new_c: int):
+    # copy hidden layers
     for i in range(len(old_head.layers) - 1):
         new_head.layers[i].set_weights(old_head.layers[i].get_weights())
 
@@ -361,23 +343,18 @@ def kd_kl(student_logits, teacher_logits, T):
     kl = tf.reduce_sum(t * (tf.math.log(tf.clip_by_value(t, 1e-8, 1.0)) - s), axis=-1)
     return kl * (T * T)
 
-
 # =============================================================================
 # Eval
 # =============================================================================
 def evaluate(model: keras.Model, ds, class_names, label_offset=0):
-    """
-    label_offset=0: 일반 평가
-    label_offset>0: ds가 local label이면 global로 offset해서 평가
-    """
     correct, total = 0, 0
     per_correct = np.zeros((len(class_names),), np.int64)
     per_total = np.zeros((len(class_names),), np.int64)
 
     for x, y_int in ds:
-        logits = model.predict(x, verbose=0)
+        logits = model(x, training=False).numpy()
         pred = np.argmax(logits, axis=1).astype(np.int32)
-        y = y_int.numpy().astype(np.int32) + int(label_offset)
+        y = (y_int.numpy().astype(np.int32) + int(label_offset))
 
         correct += int(np.sum(pred == y))
         total += int(len(y))
@@ -392,6 +369,36 @@ def evaluate(model: keras.Model, ds, class_names, label_offset=0):
     per_acc = per_correct / np.maximum(1, per_total)
     return acc, per_acc, per_total
 
+def evaluate_with_bic(model: keras.Model, ds, class_names, old_c, alpha, beta):
+    correct, total = 0, 0
+    per_correct = np.zeros((len(class_names),), np.int64)
+    per_total = np.zeros((len(class_names),), np.int64)
+
+    old_c = int(old_c)
+    alpha = float(alpha)
+    beta = float(beta)
+
+    for x, y_int in ds:
+        logits = model(x, training=False).numpy().astype(np.float32)
+        if old_c < logits.shape[1]:
+            logits_new = logits[:, old_c:] * alpha + beta
+            logits = np.concatenate([logits[:, :old_c], logits_new], axis=1)
+
+        pred = np.argmax(logits, axis=1).astype(np.int32)
+        y = y_int.numpy().astype(np.int32)
+
+        correct += int(np.sum(pred == y))
+        total += int(len(y))
+
+        y_local = y_int.numpy().astype(np.int32)
+        for c in range(len(class_names)):
+            m = (y_local == c)
+            per_total[c] += int(np.sum(m))
+            per_correct[c] += int(np.sum((pred == c) & m))
+
+    acc = correct / max(1, total)
+    per_acc = per_correct / np.maximum(1, per_total)
+    return acc, per_acc, per_total
 
 # =============================================================================
 # Phase-1
@@ -416,8 +423,7 @@ def train_phase1(src_root: Path, subset_phase1: Path):
     base, head, full, feat_model = build_keras_models(num_classes, backbone_fraction=0.0)
     loss_fn = keras.losses.SparseCategoricalCrossentropy(from_logits=True)
 
-    full.compile(optimizer=keras.optimizers.Adam(learning_rate=HEAD_LR),
-                 loss=loss_fn, metrics=["accuracy"])
+    full.compile(optimizer=make_adam(HEAD_LR), loss=loss_fn, metrics=["accuracy"])
 
     warmup_epochs = min(WARMUP_EPOCHS_PHASE1, NUM_EPOCHS_PHASE1)
     if warmup_epochs > 0:
@@ -428,8 +434,7 @@ def train_phase1(src_root: Path, subset_phase1: Path):
     if ft_epochs > 0:
         print(f"\n[Phase-1] Fine-tune backbone tail fraction={FINE_TUNE_FRACTION}, epochs={ft_epochs}, lr={BASE_LR}")
         set_backbone_trainable_fraction(base, FINE_TUNE_FRACTION)
-        full.compile(optimizer=keras.optimizers.Adam(learning_rate=BASE_LR),
-                     loss=loss_fn, metrics=["accuracy"])
+        full.compile(optimizer=make_adam(BASE_LR), loss=loss_fn, metrics=["accuracy"])
         full.fit(train_ds, validation_data=val_ds,
                  epochs=warmup_epochs + ft_epochs,
                  initial_epoch=warmup_epochs,
@@ -450,7 +455,7 @@ def train_phase1(src_root: Path, subset_phase1: Path):
     print(f"[Phase-1] weights saved: {w_path}")
     print(f"[Phase-1] meta saved: {meta_path}")
 
-    # memory: training split only
+    # memory: training split only (no aug)
     mem = ExemplarMemory(exemplars_per_class=EXEMPLARS_PER_CLASS)
     mem_build_ds = make_ds_from_dir(
         subset_phase1, BASE_CLASSES, BATCH_SIZE,
@@ -474,7 +479,6 @@ def load_phase1_info():
     with open(meta_path, "r", encoding="utf-8") as f:
         meta = json.load(f)
     return meta["classes"]
-
 
 # =============================================================================
 # Phase-2 (increment)
@@ -529,31 +533,65 @@ def train_increment(src_root: Path, subset_phase2: Path, phase1_weights_h5: str,
         raise RuntimeError("rehearsal memory empty")
 
     loss_ce = tf.keras.losses.CategoricalCrossentropy(from_logits=True, label_smoothing=LABEL_SMOOTHING)
+    opt_head = make_adam(HEAD_LR)
+    opt_base = make_adam(BASE_LR)
 
-    opt_head = tf.keras.optimizers.Adam(learning_rate=HEAD_LR)
-    # ✅ backbone 처음엔 frozen이라 base optimizer를 일단 만들어도 되고, unfreeze 때 새로 만들어도 됨
-    opt_base = tf.keras.optimizers.Adam(learning_rate=BASE_LR)
+    def pad_teacher_logits_to_newc(tlog_old):
+        # tlog_old: [B, old_c] -> [B, new_c]
+        if old_c == new_c:
+            return tlog_old
+        pad = tf.zeros([tf.shape(tlog_old)[0], new_c - old_c], dtype=tf.float32)
+        return tf.concat([tlog_old, pad], axis=1)
 
-    head_vars = s_head.trainable_variables
-    base_vars = []  # 처음엔 frozen
+    new_iter = iter(new_ds_train.repeat())
+    reh_iter = iter(rehearsal_ds.repeat())
 
-    def pad_logits_np(tlog_np: np.ndarray):
-        if tlog_np.shape[1] == new_c:
-            return tlog_np
-        pad = np.zeros((tlog_np.shape[0], new_c - tlog_np.shape[1]), np.float32)
-        return np.concatenate([tlog_np, pad], axis=1)
+    total_steps = STEPS_PER_EPOCH_PHASE2 * NUM_EPOCHS_PHASE2
+    unfreeze_step = int(total_steps * UNFREEZE_FRACTION)
 
-    # ✅ eager train step (unfreeze/optimizer 교체 안정)
-    def train_step(x, y_onehot, t_logits_padded):
-        nonlocal base_vars, opt_base
+    print(f"[Phase-2] training steps: {total_steps} (steps/epoch={STEPS_PER_EPOCH_PHASE2})")
+    t0 = time.time()
+
+    # Eager step (optimizer/variable set 변경 안전)
+    for step in range(1, total_steps + 1):
+        if step == unfreeze_step:
+            print(f"\n[Phase-2] Unfreeze backbone tail fraction={FINE_TUNE_FRACTION} at step={step}")
+            set_backbone_trainable_fraction(s_base, FINE_TUNE_FRACTION)
+
+            # Keras3 non-legacy optimizer일 때 variable set 변경 이슈 방지용: opt_base 재생성
+            try:
+                from tensorflow.keras.optimizers.legacy import Adam  # noqa
+            except Exception:
+                opt_base = make_adam(BASE_LR)
+
+        # new:reh = 1:3
+        mod = (step - 1) % NEW_TO_REH_CYCLE
+        if mod == 0:
+            # NEW batch
+            x, y_local = next(new_iter)                 # y_local in [0..len(new_classes)-1]
+            y_global = y_local + old_c                  # shift to global
+            y = onehot(y_global, new_c)
+
+            # ✅ LwF: NEW 배치에도 teacher logits 생성 (old part 유지 제약)
+            t_old = teacher_full(x, training=False)     # [B, old_c]
+            tlog = pad_teacher_logits_to_newc(tf.cast(t_old, tf.float32))
+        else:
+            # rehearsal batch
+            x, y_global, tlog_stored = next(reh_iter)   # y_global already in global space (old labels)
+            y = onehot(y_global, new_c)
+            # stored teacher logits are [B, old_c] (phase1 기준) -> pad to new_c
+            tlog = pad_teacher_logits_to_newc(tf.cast(tlog_stored, tf.float32))
+
+        head_vars = s_head.trainable_variables
+        base_vars = [v for v in s_base.trainable_variables if v.trainable]
 
         with tf.GradientTape() as tape:
             s_logits = student_full(x, training=True)
-            ce = loss_ce(y_onehot, s_logits)
+            ce = loss_ce(y, s_logits)
 
-            kd = tf.constant(0.0, tf.float32)
+            kd = 0.0
             if old_c > 0:
-                kd_vec = kd_kl(s_logits[:, :old_c], t_logits_padded[:, :old_c], KD_T)
+                kd_vec = kd_kl(s_logits[:, :old_c], tlog[:, :old_c], KD_T)
                 kd = tf.reduce_mean(kd_vec)
 
             loss = ce + KD_LAMBDA * kd
@@ -569,62 +607,27 @@ def train_increment(src_root: Path, subset_phase2: Path, phase1_weights_h5: str,
         if base_vars:
             opt_base.apply_gradients([(g, v) for g, v in zip(g_base, base_vars) if g is not None])
 
-        return loss, ce, kd
-
-    new_iter = iter(new_ds_train.repeat())
-    reh_iter = iter(rehearsal_ds.repeat())
-
-    total_steps = STEPS_PER_EPOCH_PHASE2 * NUM_EPOCHS_PHASE2
-    unfreeze_step = int(total_steps * 0.33)
-
-    print(f"[Phase-2] training steps: {total_steps} (steps/epoch={STEPS_PER_EPOCH_PHASE2})")
-
-    t0 = time.time()
-    for step in range(1, total_steps + 1):
-        if step == unfreeze_step:
-            print(f"\n[Phase-2] Unfreeze backbone tail fraction={FINE_TUNE_FRACTION} at step={step}")
-            set_backbone_trainable_fraction(s_base, FINE_TUNE_FRACTION)
-
-            # ✅ trainable var 세트가 바뀌므로 base optimizer는 새로 만들어서 안전하게
-            opt_base = tf.keras.optimizers.Adam(learning_rate=BASE_LR)
-            base_vars = s_base.trainable_variables  # 이제 비어있지 않음
-
-        if step % 2 == 1:
-            x, y_local = next(new_iter)
-            y_global = y_local + old_c
-            y = onehot(y_global, new_c)
-
-            tlog = teacher_full.predict(x, verbose=0).astype(np.float32)
-            tlog = pad_logits_np(tlog)
-        else:
-            x, y_global, tlog_stored = next(reh_iter)
-            y = onehot(y_global, new_c)
-            tlog = pad_logits_np(tlog_stored.numpy().astype(np.float32))
-
-        loss, ce, kd = train_step(x, y, tf.convert_to_tensor(tlog, tf.float32))
-
         if step % 50 == 0:
             print(f"  step {step:4d}/{total_steps} | loss {float(loss):.4f} (ce {float(ce):.4f}, kd {float(kd):.4f})")
 
     print(f"[Phase-2] done. time={time.time()-t0:.1f}s")
 
-    # evaluate all classes (validation) - ✅ 안전 split 적용
+    # Evaluate all classes (validation)
     subset_all = Path(DATA_DIR) / "flow_subset_all"
     _copy_subset(src_root, subset_all, CLASS_ORDER)
 
-    calib_ds, eval_ds = make_ds_full_and_split(
+    eval_ds = make_ds_from_dir(
         subset_all, CLASS_ORDER, BATCH_SIZE,
-        val_ratio=VAL_SPLIT,
-        shuffle_buf=8000,
-        cache_tag="all_eval_full"
+        training=False, subset="validation", validation_split=VAL_SPLIT,
+        use_cache=True, cache_tag="eval_all_val"
     )
 
     acc_all, per_acc_all, per_n_all = evaluate(student_full, eval_ds, CLASS_ORDER, label_offset=0)
-    print(f"[Phase-2] eval(all/val) acc: {acc_all:.4f}")
+    print(f"[Phase-2] eval(all/val) acc (pre-BiC): {acc_all:.4f}")
     for i, c in enumerate(CLASS_ORDER):
         print(f"    {c:12s}: acc={per_acc_all[i]:.4f} | n={int(per_n_all[i])}")
 
-    # update memory logits
+    # update memory logits (student 기준으로 refresh)
     mem.refresh_teacher_logits(student_full, num_classes=new_c)
     mem_path2 = os.path.join(CKPT_DIR, "memory_after_inc1.npz")
     mem.save(mem_path2)
@@ -641,8 +644,19 @@ def train_increment(src_root: Path, subset_phase2: Path, phase1_weights_h5: str,
     print(f"[Phase-2] weights saved: {w_path2}")
     print(f"[Phase-2] meta saved: {meta_path2}")
 
-    # BiC calibration (✅ 같은 split의 train쪽 = calib_ds 사용)
+    # BiC calibration (training split of subset_all) - cache OFF (repeat 소비 때문에 cache 경고 방지)
+    calib_ds = make_ds_from_dir(
+        subset_all, CLASS_ORDER, BATCH_SIZE,
+        training=False, subset="training", validation_split=VAL_SPLIT,
+        use_cache=False
+    )
     alpha, beta = bic_calibrate(student_full, calib_ds, old_c, new_c)
+
+    # post-BiC eval (val)
+    acc_post, per_acc_post, per_n_post = evaluate_with_bic(student_full, eval_ds, CLASS_ORDER, old_c, alpha, beta)
+    print(f"[Phase-2] eval(all/val) acc (post-BiC): {acc_post:.4f}")
+    for i, c in enumerate(CLASS_ORDER):
+        print(f"    {c:12s}: acc={per_acc_post[i]:.4f} | n={int(per_n_post[i])}")
 
     export_increment(student_full, num_classes=new_c, old_num_classes=old_c, new_class_start=old_c,
                      tag="inc1_after_add", bic_alpha=float(alpha), bic_beta=float(beta))
@@ -655,21 +669,24 @@ def train_increment(src_root: Path, subset_phase2: Path, phase1_weights_h5: str,
 
     return w_path2, mem_path2
 
-
 def bic_calibrate(student_full: keras.Model, calib_ds, old_c, new_c):
     print("\n[BiC] calibration...")
     alpha = tf.Variable(1.0, trainable=True, dtype=tf.float32)
     beta  = tf.Variable(0.0, trainable=True, dtype=tf.float32)
-    opt = tf.keras.optimizers.SGD(learning_rate=BIC_LR)
+    opt = make_sgd(BIC_LR)
 
     @tf.function
     def step(x, y_int):
         y = onehot(y_int, new_c)
         with tf.GradientTape() as tape:
             logits = student_full(x, training=False)
-            old = logits[:, :old_c]
-            new = logits[:, old_c:]
-            logits_corr = tf.concat([old, alpha * new + beta], axis=1)
+            if old_c >= new_c:
+                logits_corr = logits
+            else:
+                old = logits[:, :old_c]
+                new = logits[:, old_c:]
+                logits_corr = tf.concat([old, alpha * new + beta], axis=1)
+
             loss = tf.reduce_mean(tf.keras.losses.categorical_crossentropy(y, logits_corr, from_logits=True))
         grads = tape.gradient(loss, [alpha, beta])
         opt.apply_gradients(zip(grads, [alpha, beta]))
@@ -683,8 +700,7 @@ def bic_calibrate(student_full: keras.Model, calib_ds, old_c, new_c):
             print(f"  bic step {s}/{BIC_STEPS} | loss {float(loss):.4f} | alpha {float(alpha):.4f} beta {float(beta):.4f}")
 
     print(f"[BiC] done: alpha={float(alpha):.4f}, beta={float(beta):.4f}")
-    return alpha.numpy(), beta.numpy()
-
+    return float(alpha.numpy()), float(beta.numpy())
 
 # =============================================================================
 # Export module (SavedModel 3 signatures + TFLite infer-only)
@@ -704,9 +720,9 @@ def make_trainable_module(num_classes, old_num_classes, new_class_start):
             self.bic_beta  = tf.Variable(0.0, trainable=True, dtype=tf.float32, name="bic_beta")
 
             self.loss_ce = tf.keras.losses.CategoricalCrossentropy(from_logits=True, label_smoothing=LABEL_SMOOTHING)
-            self.opt_head = tf.keras.optimizers.Adam(learning_rate=HEAD_LR)
-            self.opt_base = tf.keras.optimizers.Adam(learning_rate=BASE_LR)
-            self.opt_bic  = tf.keras.optimizers.SGD(learning_rate=BIC_LR)
+            self.opt_head = make_adam(HEAD_LR)
+            self.opt_base = make_adam(BASE_LR)
+            self.opt_bic  = make_sgd(BIC_LR)
 
         def _apply_bic(self, logits):
             if self.new_class_start >= self.num_classes:
@@ -785,7 +801,6 @@ def make_trainable_module(num_classes, old_num_classes, new_class_start):
 
     return CILModule()
 
-
 def export_increment(student_full: keras.Model,
                      num_classes, old_num_classes, new_class_start,
                      tag, bic_alpha, bic_beta):
@@ -804,8 +819,8 @@ def export_increment(student_full: keras.Model,
     dummy = tf.zeros((1, IMG_SIZE, IMG_SIZE, 3), tf.float32)
     _ = module.infer(dummy)
 
-    base_layer = None
-    head_layer = None
+    # locate base/head inside student_full
+    base_layer, head_layer = None, None
     for l in student_full.layers:
         if isinstance(l, keras.Model) and "mobilenet" in l.name.lower():
             base_layer = l
@@ -827,23 +842,7 @@ def export_increment(student_full: keras.Model,
     module.bic_alpha.assign(float(bic_alpha))
     module.bic_beta.assign(float(bic_beta))
 
-    # optimizer slot build (안전)
-    try:
-        module.opt_head.build(module.head.trainable_variables)
-    except Exception:
-        pass
-    try:
-        base_vars = [v for v in module.base.trainable_variables if v.trainable]
-        if base_vars:
-            module.opt_base.build(base_vars)
-    except Exception:
-        pass
-    try:
-        module.opt_bic.build([module.bic_alpha, module.bic_beta])
-    except Exception:
-        pass
-
-    # SavedModel: 3시그니처 유지
+    # SavedModel: 3 signatures
     tf.saved_model.save(
         module, export_path,
         signatures={"infer": module.infer, "train": module.train, "train_bic": module.train_bic}
@@ -851,10 +850,7 @@ def export_increment(student_full: keras.Model,
     print(f"[Export] SavedModel saved: {export_path}")
 
     # TFLite: infer-only
-    converter = tf.lite.TFLiteConverter.from_saved_model(
-        export_path,
-        signature_keys=["infer"]
-    )
+    converter = tf.lite.TFLiteConverter.from_saved_model(export_path, signature_keys=["infer"])
     converter.optimizations = [tf.lite.Optimize.DEFAULT]
     tflite = converter.convert()
 
@@ -877,7 +873,6 @@ def export_increment(student_full: keras.Model,
     with open(os.path.join(export_path, "meta.json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2, ensure_ascii=False)
 
-
 # =============================================================================
 # Main
 # =============================================================================
@@ -891,7 +886,6 @@ def main():
     train_increment(src_root, subset_phase2, w0, mem0)
 
     print("\nDone.")
-
 
 if __name__ == "__main__":
     main()
