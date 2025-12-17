@@ -46,6 +46,8 @@ bazel build --config=elinux_aarch64 \
   --jobs=4 \
   //tensorflow/lite/delegates/flex:libtensorflowlite_flex.so
 
+echo '✓ Build completed successfully'
+
 echo '=== 6. Packaging SDK ==='
 mkdir -p /tmp/sdk/include
 mkdir -p /tmp/sdk/lib
@@ -56,6 +58,20 @@ cp bazel-bin/tensorflow/lite/delegates/flex/libtensorflowlite_flex.so /tmp/sdk/l
 
 echo 'Copying Source Headers...'
 find tensorflow/lite \( -name '*.h' -o -name '*.hpp' -o -name '*.inc' \) -exec cp --parents {} /tmp/sdk/include/ \;
+
+echo 'Copying TensorFlow Compiler Headers (Required for Flex)...'
+if [ -d "tensorflow/compiler" ]; then
+    find tensorflow/compiler \( -name '*.h' -o -name '*.hpp' -o -name '*.inc' \) -exec cp --parents {} /tmp/sdk/include/ \;
+    echo "✓ Copied source compiler headers"
+fi
+
+echo 'Copying Generated Compiler Headers...'
+cd bazel-bin
+if [ -d "tensorflow/compiler" ]; then
+    find tensorflow/compiler \( -name '*.pb.h' -o -name '*.inc' \) -exec cp --parents {} /tmp/sdk/include/ \;
+    echo "✓ Copied generated compiler headers"
+fi
+cd /tensorflow_src
 
 echo 'Copying Generated Headers...'
 cd bazel-bin
