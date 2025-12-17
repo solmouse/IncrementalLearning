@@ -27,10 +27,10 @@ def pick_root():
     return os.getcwd()
 
 ROOT = pick_root()
-BASE_DIR = r"D:\2025-1\lge\LGE_IncrmentalLearning\python"
+BASE_DIR = r"YOUR PATH"
 
-WORK_DIR   = os.path.join(BASE_DIR, "work_icarl")
-DATA_DIR   = os.path.join(BASE_DIR, "data_icarl")
+WORK_DIR   = os.path.join(BASE_DIR, "work")
+DATA_DIR   = os.path.join(BASE_DIR, "data")
 CACHE_DIR  = os.path.join(WORK_DIR, "cache")
 CKPT_DIR   = os.path.join(WORK_DIR, "ckpt")
 EXPORT_DIR = os.path.join(WORK_DIR, "export")
