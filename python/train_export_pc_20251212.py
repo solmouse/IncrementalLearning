@@ -45,7 +45,6 @@ os.makedirs(os.environ["KERAS_HOME"], exist_ok=True)
 
 # 체크포인트 및 TFLite 저장 위치
 CKPT_BEFORE = os.path.join(BASE_DIR, "ckpt_before", "ckpt_before.npy")
-CKPT_AFTER  = os.path.join(BASE_DIR, "ckpt_after", "ckpt_after.npy")
 SAVED_MODEL_DIR = os.path.join(BASE_DIR, "ckpt_before", "saved_model")
 TFLITE_PATH     = os.path.join(BASE_DIR, "ckpt_before", "model.tflite")
 
@@ -53,7 +52,6 @@ TFLITE_PATH     = os.path.join(BASE_DIR, "ckpt_before", "model.tflite")
 TEST_BATCH_DIR = os.path.join(BASE_DIR, "test_batches")
 
 os.makedirs(os.path.dirname(CKPT_BEFORE), exist_ok=True)
-os.makedirs(os.path.dirname(CKPT_AFTER), exist_ok=True)
 os.makedirs(SAVED_MODEL_DIR, exist_ok=True)
 os.makedirs(TEST_BATCH_DIR, exist_ok=True)
 
