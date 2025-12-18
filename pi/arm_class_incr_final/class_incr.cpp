@@ -601,7 +601,7 @@ int main(int argc, char** argv) {
 
     if (argc < 11) {
         std::cerr << "Usage: " << argv[0]
-                  << " <backbone.tflite> <old_head_w.npy> <old_head_b.npy>"
+                  << " <model.tflite> <old_head_w.npy> <old_head_b.npy>"
                   << " <new_x.npy> <new_y.npy> <reh_x.npy> <reh_y.npy>"
                   << " <val_x.npy> <val_y.npy> <prototypes.npy>" << std::endl;
         return -1;

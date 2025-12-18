@@ -233,7 +233,7 @@ def export_for_cpp(feat_model, head, mem):
     
     tflite_model = converter.convert()
     
-    tflite_path = os.path.join(EXPORT_DIR, "backbone.tflite")
+    tflite_path = os.path.join(EXPORT_DIR, "model.tflite")
     with open(tflite_path, "wb") as f:
         f.write(tflite_model)
     print(f"✓ TFLite: {tflite_path} ({len(tflite_model)/1024/1024:.2f} MB)")
